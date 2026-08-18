@@ -29,8 +29,19 @@ export interface Plan {
 export interface Workspace {
   id: string;
   name: string;
-  plan: PlanType;
+  plan?: PlanType;
+  ownerId?: string;
   createdAt: string;
+}
+
+export interface TeamMember {
+  id: string;
+  workspaceId: string;
+  userId: string;
+  name: string;
+  email: string;
+  role: 'ADMIN' | 'MEMBER' | 'VIEWER';
+  joinedAt: string;
 }
 
 export interface User {
@@ -38,6 +49,7 @@ export interface User {
   email: string;
   name: string;
   workspaceId: string;
+  companyName?: string;
   role: 'ADMIN' | 'MEMBER' | 'VIEWER';
 }
 
@@ -98,4 +110,22 @@ export interface Activity {
   action: string;
   description: string;
   createdAt: string;
+}
+
+export interface SignUpParams {
+  email: string;
+  password: string;
+  fullName: string;
+  companyName: string;
+}
+
+export interface SignInParams {
+  email: string;
+  password: string;
+}
+
+export interface AuthSession {
+  accessToken: string;
+  user: User;
+  expiresAt?: number;
 }

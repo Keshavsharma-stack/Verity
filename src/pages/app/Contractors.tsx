@@ -4,7 +4,7 @@ import { Card } from '../../components/ui/Card';
 import { Button } from '../../components/ui/Button';
 import { Badge } from '../../components/ui/Badge';
 import { Input } from '../../components/ui/Input';
-import { Search, Plus, Filter, MoreHorizontal } from 'lucide-react';
+import { Search, Plus, Filter, ArrowRight } from 'lucide-react';
 import { contractorService } from '../../services/api';
 import { Contractor } from '../../types';
 import { formatDate } from '../../lib/utils';
@@ -30,26 +30,26 @@ export function Contractors() {
     <div className="space-y-6 max-w-[1200px] mx-auto">
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
         <div>
-          <h1 className="text-2xl font-semibold text-zinc-100 tracking-tight">Contractors</h1>
-          <p className="text-[13px] font-medium text-zinc-500 mt-1">Manage your contractors and view their compliance status.</p>
+          <h1 className="text-2xl font-bold text-white tracking-tight">Contractor Directory</h1>
+          <p className="text-xs font-medium text-zinc-400 mt-1">Manage verified subcontractors, track trade compliance, and review passport documents.</p>
         </div>
-        <Button className="bg-zinc-100 text-zinc-900 hover:bg-white shadow-sm" asChild>
+        <Button asChild>
           <Link to="/contractors/new"><Plus className="w-4 h-4 mr-2" /> Add Contractor</Link>
         </Button>
       </div>
 
-      <Card className="bg-zinc-900/40 border-zinc-800/80 shadow-sm overflow-hidden">
-        <div className="p-4 border-b border-zinc-800/60 flex flex-col sm:flex-row gap-4 justify-between bg-zinc-950/20">
+      <Card className="bg-[#0a0a0f] border-zinc-800/80 shadow-2xl overflow-hidden">
+        <div className="p-4 border-b border-zinc-800/80 flex flex-col sm:flex-row gap-4 justify-between bg-zinc-950/60">
           <div className="relative max-w-sm w-full">
             <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-zinc-500" />
             <Input 
               placeholder="Search by company or trade..." 
-              className="pl-9 bg-zinc-950/50 border-zinc-800/80 focus:ring-emerald-500/20 focus:border-emerald-500/50"
+              className="pl-9 bg-black/70 border-zinc-800 focus:ring-red-500/50 focus:border-red-500/60"
               value={search}
               onChange={(e) => setSearch(e.target.value)}
             />
           </div>
-          <Button variant="outline" className="sm:w-auto w-full bg-zinc-900/50 border-zinc-800">
+          <Button variant="outline" className="sm:w-auto w-full">
             <Filter className="w-4 h-4 mr-2" /> Filter
           </Button>
         </div>
@@ -57,43 +57,46 @@ export function Contractors() {
         <div className="overflow-x-auto">
           <table className="w-full text-left border-collapse whitespace-nowrap">
             <thead>
-              <tr className="border-b border-zinc-800/60 text-[11px] font-semibold text-zinc-500 uppercase tracking-wider bg-zinc-950/30">
-                <th className="p-4 font-semibold">Company</th>
-                <th className="p-4 font-semibold">Trade</th>
-                <th className="p-4 font-semibold">Compliance Status</th>
-                <th className="p-4 font-semibold">Contact Info</th>
-                <th className="p-4 font-semibold">Last Updated</th>
-                <th className="p-4 text-right font-semibold">Actions</th>
+              <tr className="border-b border-zinc-800 text-[11px] font-bold text-zinc-400 uppercase tracking-wider bg-black/40">
+                <th className="p-4">Company</th>
+                <th className="p-4">Trade</th>
+                <th className="p-4">Compliance Status</th>
+                <th className="p-4">Contact Info</th>
+                <th className="p-4">Last Updated</th>
+                <th className="p-4 text-right">Actions</th>
               </tr>
             </thead>
-            <tbody className="divide-y divide-zinc-800/40 text-[14px]">
+            <tbody className="divide-y divide-zinc-800/60 text-xs">
               {loading ? (
                 <tr>
-                  <td colSpan={6} className="p-8 text-center text-[13px] font-medium text-zinc-500 bg-zinc-950/10">Loading contractors...</td>
+                  <td colSpan={6} className="p-8 text-center text-xs font-medium text-zinc-500 bg-transparent">Loading contractors...</td>
                 </tr>
               ) : filteredContractors.length === 0 ? (
                 <tr>
-                  <td colSpan={6} className="p-8 text-center text-[13px] font-medium text-zinc-500 bg-zinc-950/10">No contractors found.</td>
+                  <td colSpan={6} className="p-8 text-center text-xs font-medium text-zinc-500 bg-transparent">No contractors found.</td>
                 </tr>
               ) : (
                 filteredContractors.map((contractor) => (
-                  <tr key={contractor.id} className="hover:bg-zinc-800/40 transition-colors group">
+                  <tr key={contractor.id} className="hover:bg-zinc-900/40 transition-colors group">
                     <td className="p-4">
-                      <div className="font-semibold text-zinc-200">{contractor.companyName}</div>
-                      <div className="text-zinc-500 text-[12px] font-medium mt-0.5">{contractor.contractorType}</div>
+                      <div className="font-bold text-zinc-100">{contractor.companyName}</div>
+                      <div className="text-zinc-400 text-[11px] font-medium mt-0.5">{contractor.contractorType}</div>
                     </td>
-                    <td className="p-4 text-zinc-300 font-medium">{contractor.trade}</td>
+                    <td className="p-4 text-zinc-300 font-semibold">{contractor.trade}</td>
                     <td className="p-4">
-                      <Badge status={contractor.status} className="text-[10px] px-2 py-0.5 font-semibold tracking-wider uppercase" />
+                      <Badge status={contractor.status} className="text-[10px] px-2 py-0.5 font-bold tracking-wider uppercase" />
                     </td>
                     <td className="p-4">
-                      <div className="font-medium text-zinc-300 text-[13px]">{contractor.primaryContact}</div>
-                      <div className="text-zinc-500 text-[12px] font-medium mt-0.5">{contractor.email}</div>
+                      <div className="font-medium text-zinc-200 text-xs">{contractor.primaryContact}</div>
+                      <div className="text-zinc-400 text-[11px] font-medium mt-0.5">{contractor.email}</div>
                     </td>
-                    <td className="p-4 text-zinc-400 text-[13px] font-medium">{formatDate(contractor.lastUpdated)}</td>
+                    <td className="p-4 text-zinc-400 text-xs font-medium">{formatDate(contractor.lastUpdated)}</td>
                     <td className="p-4 text-right">
-                      <Button variant="ghost" size="sm" asChild className="opacity-0 group-hover:opacity-100 transition-opacity text-zinc-400 hover:text-white">
-                        <Link to={`/contractors/${contractor.id}`}>View Passport</Link>
+                      <Button variant="outline" size="sm" asChild className="text-zinc-300 hover:text-white hover:border-red-500/60">
+                        <Link to={`/contractors/${contractor.id}`}>
+                          <span>View Passport</span>
+                          <ArrowRight className="w-3.5 h-3.5 ml-1.5" />
+                        </Link>
                       </Button>
                     </td>
                   </tr>

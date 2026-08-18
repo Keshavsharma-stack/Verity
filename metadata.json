@@ -1,0 +1,6 @@
+{
+  "name": "Verity",
+  "description": "A serious B2B operational compliance platform for companies managing contractors and subcontractors.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

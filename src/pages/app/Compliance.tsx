@@ -1,27 +1,140 @@
 import React, { useState, useEffect } from 'react';
-import { Card, CardContent, CardHeader, CardTitle } from '../../components/ui/Card';
+import { Card, CardContent } from '../../components/ui/Card';
 import { Button } from '../../components/ui/Button';
 import { Badge } from '../../components/ui/Badge';
-import { ShieldCheck, ShieldAlert, AlertTriangle, CheckCircle2, Download, Filter, Search, ArrowUpRight } from 'lucide-react';
+import { ShieldCheck, ShieldAlert, AlertTriangle, CheckCircle2, Download, Search, ArrowUpRight, Building2, Clock, XCircle } from 'lucide-react';
 import { Link } from 'react-router-dom';
-import { MOCK_CONTRACTORS } from '../../data/mockData';
-import { Contractor } from '../../types';
+import { contractorService } from '../../services/contractorService';
+import { complianceService } from '../../services/complianceService';
+import { Contractor, ComplianceGateResult, RequirementEvaluation } from '../../types';
+import { useAuth } from '../../hooks/useAuth';
 
 export function Compliance() {
-  const [contractors, setContractors] = useState<Contractor[]>(MOCK_CONTRACTORS);
-  const [filter, setFilter] = useState<'ALL' | 'COMPLIANT' | 'EXPIRING' | 'NON_COMPLIANT'>('ALL');
+  const { user } = useAuth();
+  const [contractors, setContractors] = useState<Contractor[]>([]);
+  const [gateResults, setGateResults] = useState<Map<string, ComplianceGateResult>>(new Map());
+  const [loading, setLoading] = useState(true);
+  const [filter, setFilter] = useState<'ALL' | 'READY' | 'EXPIRING' | 'NOT_READY' | 'REVIEW_REQUIRED'>('ALL');
   const [search, setSearch] = useState('');
 
+  useEffect(() => {
+    let isMounted = true;
+
+    async function loadData() {
+      if (!user?.workspaceId) {
+        setLoading(false);
+        return;
+      }
+
+      setLoading(true);
+      const [res, gateRes] = await Promise.all([
+        contractorService.listContractors(user.workspaceId),
+        complianceService.evaluateWorkspaceCompliance(user.workspaceId),
+      ]);
+
+      if (isMounted) {
+        setContractors(res.data || []);
+        setGateResults(gateRes.data || new Map());
+        setLoading(false);
+      }
+    }
+
+    loadData();
+
+    return () => {
+      isMounted = false;
+    };
+  }, [user?.workspaceId]);
+
   const filtered = contractors.filter(c => {
-    const matchesFilter = filter === 'ALL' || c.status === filter;
+    const gate = gateResults.get(c.id);
+    const gateStatus = gate ? (gate.status === 'READY' && gate.expiringCount > 0 ? 'EXPIRING' : gate.status) : c.status;
+    
+    const matchesFilter = filter === 'ALL' || gateStatus === filter || (filter === 'READY' && gate?.status === 'READY');
     const matchesSearch = c.companyName.toLowerCase().includes(search.toLowerCase()) || c.trade.toLowerCase().includes(search.toLowerCase());
     return matchesFilter && matchesSearch;
   });
 
-  const compliantCount = contractors.filter(c => c.status === 'COMPLIANT').length;
-  const expiringCount = contractors.filter(c => c.status === 'EXPIRING').length;
-  const nonCompliantCount = contractors.filter(c => c.status === 'NON_COMPLIANT').length;
-  const complianceRate = Math.round((compliantCount / contractors.length) * 100);
+  // Calculate high-fidelity compliance metrics
+  let compliantCount = 0;
+  let expiringCount = 0;
+  let nonCompliantCount = 0;
+  let reviewRequiredCount = 0;
+
+  if (contractors.length > 0) {
+    for (const c of contractors) {
+      const gate = gateResults.get(c.id);
+      if (gate) {
+        if (gate.status === 'READY') {
+          if (gate.expiringCount > 0) expiringCount++;
+          else compliantCount++;
+        } else if (gate.status === 'NOT_READY') {
+          nonCompliantCount++;
+        } else if (gate.status === 'REVIEW_REQUIRED') {
+          reviewRequiredCount++;
+        }
+      } else {
+        if (c.status === 'COMPLIANT') compliantCount++;
+        else if (c.status === 'EXPIRING') expiringCount++;
+        else nonCompliantCount++;
+      }
+    }
+  }
+
+  const totalEvaluated = contractors.length;
+  const complianceRate = totalEvaluated > 0 ? Math.round((compliantCount / totalEvaluated) * 100) : 100;
+
+  function renderRequirementCell(reqEval?: RequirementEvaluation) {
+    if (!reqEval || !reqEval.required) {
+      return <span className="text-zinc-500 font-medium">N/A</span>;
+    }
+
+    if (reqEval.status === 'SATISFIED') {
+      return (
+        <span className="text-emerald-400 font-medium flex items-center gap-1.5">
+          <CheckCircle2 className="w-3.5 h-3.5" /> Active
+        </span>
+      );
+    }
+
+    if (reqEval.status === 'EXPIRING') {
+      return (
+        <span className="text-amber-400 font-medium flex items-center gap-1.5">
+          <AlertTriangle className="w-3.5 h-3.5" /> {reqEval.daysRemaining !== null && reqEval.daysRemaining !== undefined ? `${reqEval.daysRemaining}d` : 'Expiring'}
+        </span>
+      );
+    }
+
+    if (reqEval.status === 'MANUAL_REVIEW_REQUIRED') {
+      return (
+        <span className="text-amber-300 font-medium flex items-center gap-1.5">
+          <Clock className="w-3.5 h-3.5" /> Review Req.
+        </span>
+      );
+    }
+
+    if (reqEval.status === 'EXPIRED') {
+      return (
+        <span className="text-red-400 font-bold flex items-center gap-1.5">
+          <XCircle className="w-3.5 h-3.5" /> Expired
+        </span>
+      );
+    }
+
+    if (reqEval.status === 'DEFICIENT') {
+      return (
+        <span className="text-red-400 font-bold flex items-center gap-1.5">
+          <ShieldAlert className="w-3.5 h-3.5" /> Deficient
+        </span>
+      );
+    }
+
+    return (
+      <span className="text-red-400 font-bold flex items-center gap-1.5">
+        <ShieldAlert className="w-3.5 h-3.5" /> Missing
+      </span>
+    );
+  }
 
   return (
     <div className="space-y-6 max-w-[1200px] mx-auto">
@@ -60,11 +173,11 @@ export function Compliance() {
           <div className="absolute top-0 left-0 w-1 h-full bg-emerald-500" />
           <CardContent className="p-5 pl-6">
             <div className="text-[10px] font-bold text-zinc-400 uppercase tracking-wider mb-2 flex items-center justify-between">
-              Site-Approved (Compliant)
+              Site-Approved (Ready)
               <CheckCircle2 className="h-4 w-4 text-emerald-400" />
             </div>
             <div className="text-3xl font-extrabold text-emerald-400">{compliantCount}</div>
-            <p className="text-[10px] text-zinc-500 mt-2 font-medium">All insurance & licenses verified</p>
+            <p className="text-[10px] text-zinc-500 mt-2 font-medium">All requirements verified & active</p>
           </CardContent>
         </Card>
 
@@ -84,10 +197,10 @@ export function Compliance() {
           <div className="absolute top-0 left-0 w-1 h-full bg-red-600" />
           <CardContent className="p-5 pl-6">
             <div className="text-[10px] font-bold text-red-300 uppercase tracking-wider mb-2 flex items-center justify-between">
-              Site Blocked (Non-Compliant)
+              Site Blocked / Review
               <ShieldAlert className="h-4 w-4 text-red-500" />
             </div>
-            <div className="text-3xl font-extrabold text-red-400">{nonCompliantCount}</div>
+            <div className="text-3xl font-extrabold text-red-400">{nonCompliantCount + reviewRequiredCount}</div>
             <p className="text-[10px] text-red-400/70 mt-2 font-medium">Immediate site access prohibited</p>
           </CardContent>
         </Card>
@@ -97,7 +210,7 @@ export function Compliance() {
       <Card className="bg-[#0a0a0f] border-zinc-800/80 shadow-2xl overflow-hidden">
         <div className="p-4 border-b border-zinc-800/80 flex flex-col sm:flex-row gap-4 justify-between bg-zinc-950/60 items-center">
           <div className="flex items-center gap-2 overflow-x-auto w-full sm:w-auto">
-            {(['ALL', 'COMPLIANT', 'EXPIRING', 'NON_COMPLIANT'] as const).map(tab => (
+            {(['ALL', 'READY', 'EXPIRING', 'NOT_READY', 'REVIEW_REQUIRED'] as const).map(tab => (
               <button
                 key={tab}
                 onClick={() => setFilter(tab)}
@@ -139,59 +252,63 @@ export function Compliance() {
               </tr>
             </thead>
             <tbody className="divide-y divide-zinc-800/60 text-xs">
-              {filtered.map(contractor => (
-                <tr key={contractor.id} className="hover:bg-zinc-900/40 transition-colors">
-                  <td className="p-4">
-                    <div className="font-bold text-zinc-100">{contractor.companyName}</div>
-                    <div className="text-zinc-500 text-[11px] font-medium mt-0.5">{contractor.primaryContact}</div>
-                  </td>
-                  <td className="p-4 text-zinc-300 font-semibold">{contractor.trade}</td>
-                  <td className="p-4">
-                    <Badge status={contractor.status} className="text-[10px] px-2.5 py-0.5 font-bold uppercase tracking-wider" />
-                  </td>
-                  <td className="p-4">
-                    {contractor.requirements.insuranceRequired ? (
-                      <span className="text-emerald-400 font-medium flex items-center gap-1.5">
-                        <CheckCircle2 className="w-3.5 h-3.5" /> Active
-                      </span>
-                    ) : (
-                      <span className="text-zinc-500 font-medium">N/A</span>
-                    )}
-                  </td>
-                  <td className="p-4">
-                    {contractor.status === 'EXPIRING' ? (
-                      <span className="text-amber-400 font-medium flex items-center gap-1.5">
-                        <AlertTriangle className="w-3.5 h-3.5" /> 12 Days
-                      </span>
-                    ) : contractor.requirements.workersCompRequired ? (
-                      <span className="text-emerald-400 font-medium flex items-center gap-1.5">
-                        <CheckCircle2 className="w-3.5 h-3.5" /> Active
-                      </span>
-                    ) : (
-                      <span className="text-zinc-500 font-medium">N/A</span>
-                    )}
-                  </td>
-                  <td className="p-4">
-                    {contractor.status === 'NON_COMPLIANT' ? (
-                      <span className="text-red-400 font-bold flex items-center gap-1.5">
-                        <ShieldAlert className="w-3.5 h-3.5" /> Missing
-                      </span>
-                    ) : (
-                      <span className="text-emerald-400 font-medium flex items-center gap-1.5">
-                        <CheckCircle2 className="w-3.5 h-3.5" /> Verified
-                      </span>
-                    )}
-                  </td>
-                  <td className="p-4 text-right">
-                    <Button variant="ghost" size="sm" asChild className="text-zinc-400 hover:text-red-400">
-                      <Link to={`/contractors/${contractor.id}`}>
-                        <span>View</span>
-                        <ArrowUpRight className="w-3.5 h-3.5 ml-1" />
-                      </Link>
-                    </Button>
+              {loading ? (
+                <tr>
+                  <td colSpan={7} className="p-8 text-center text-zinc-500 text-xs">Loading matrix...</td>
+                </tr>
+              ) : contractors.length === 0 ? (
+                <tr>
+                  <td colSpan={7} className="p-12 text-center text-zinc-500 text-xs">
+                    <Building2 className="w-6 h-6 mx-auto mb-2 text-zinc-600" />
+                    No contractors registered in your workspace. Add a contractor to begin tracking compliance.
                   </td>
                 </tr>
-              ))}
+              ) : filtered.length === 0 ? (
+                <tr>
+                  <td colSpan={7} className="p-8 text-center text-zinc-500 text-xs">No contractors match the current filter.</td>
+                </tr>
+              ) : (
+                filtered.map(contractor => {
+                  const gate = gateResults.get(contractor.id);
+                  const displayStatus = gate 
+                    ? (gate.status === 'READY' ? (gate.expiringCount > 0 ? 'EXPIRING' : 'READY') : gate.status)
+                    : contractor.status;
+
+                  const glReq = gate?.requirements.find(r => r.requirementId === 'insuranceRequired');
+                  const wcReq = gate?.requirements.find(r => r.requirementId === 'workersCompRequired');
+                  const licReq = gate?.requirements.find(r => r.requirementId === 'professionalLicenseRequired' || r.requirementId === 'businessLicenseRequired');
+
+                  return (
+                    <tr key={contractor.id} className="hover:bg-zinc-900/40 transition-colors">
+                      <td className="p-4">
+                        <div className="font-bold text-zinc-100">{contractor.companyName}</div>
+                        <div className="text-zinc-500 text-[11px] font-medium mt-0.5">{contractor.primaryContact}</div>
+                      </td>
+                      <td className="p-4 text-zinc-300 font-semibold">{contractor.trade}</td>
+                      <td className="p-4">
+                        <Badge status={displayStatus} className="text-[10px] px-2.5 py-0.5 font-bold uppercase tracking-wider" />
+                      </td>
+                      <td className="p-4">
+                        {renderRequirementCell(glReq)}
+                      </td>
+                      <td className="p-4">
+                        {renderRequirementCell(wcReq)}
+                      </td>
+                      <td className="p-4">
+                        {renderRequirementCell(licReq)}
+                      </td>
+                      <td className="p-4 text-right">
+                        <Button variant="ghost" size="sm" asChild className="text-zinc-400 hover:text-red-400">
+                          <Link to={`/contractors/${contractor.id}`}>
+                            <span>View</span>
+                            <ArrowUpRight className="w-3.5 h-3.5 ml-1" />
+                          </Link>
+                        </Button>
+                      </td>
+                    </tr>
+                  );
+                })
+              )}
             </tbody>
           </table>
         </div>

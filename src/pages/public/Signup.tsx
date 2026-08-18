@@ -241,7 +241,7 @@ export function Signup() {
               </div>
 
               <p className="text-[11px] text-center text-zinc-500 mt-4 leading-relaxed">
-                By signing up, you agree to Verity's Terms of Service and Privacy Policy.
+                By signing up, you agree to Verity's <Link to="/terms" className="text-red-400 hover:text-red-300 hover:underline">Terms of Service</Link> and <Link to="/privacy" className="text-red-400 hover:text-red-300 hover:underline">Privacy Policy</Link>.
               </p>
             </form>
           )}

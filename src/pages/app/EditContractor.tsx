@@ -3,42 +3,164 @@ import { useNavigate, useParams } from 'react-router-dom';
 import { Card, CardContent, CardHeader, CardTitle, CardFooter } from '../../components/ui/Card';
 import { Button } from '../../components/ui/Button';
 import { Input, Label } from '../../components/ui/Input';
-import { ArrowLeft } from 'lucide-react';
-import { contractorService } from '../../services/api';
-import { Contractor } from '../../types';
+import { ArrowLeft, Loader2, Check, AlertCircle } from 'lucide-react';
+import { contractorService } from '../../services/contractorService';
+import { Contractor, ComplianceStatus } from '../../types';
+import { useAuth } from '../../hooks/useAuth';
 
 export function EditContractor() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
+  const { user } = useAuth();
+
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
-  const [contractor, setContractor] = useState<Contractor | null>(null);
+  const [saved, setSaved] = useState(false);
+  const [errorMessage, setErrorMessage] = useState<string | null>(null);
+
+  // Form State
+  const [companyName, setCompanyName] = useState('');
+  const [trade, setTrade] = useState('');
+  const [contactName, setContactName] = useState('');
+  const [email, setEmail] = useState('');
+  const [phone, setPhone] = useState('');
+  const [address, setAddress] = useState('');
+  const [contractorType, setContractorType] = useState('Subcontractor');
+  const [notes, setNotes] = useState('');
+  const [status, setStatus] = useState<ComplianceStatus>('PENDING_REVIEW');
+
+  const [requirements, setRequirements] = useState({
+    insuranceRequired: true,
+    workersCompRequired: true,
+    businessLicenseRequired: true,
+    professionalLicenseRequired: false,
+    taxDocumentationRequired: true,
+    safetyDocumentationRequired: false,
+  });
 
   useEffect(() => {
-    if (!id) return;
-    contractorService.getContractorById(id).then(con => {
-      setContractor(con || null);
-      setLoading(false);
-    });
-  }, [id]);
+    let isMounted = true;
+
+    async function loadContractor() {
+      if (!id || !user?.workspaceId) {
+        setLoading(false);
+        return;
+      }
+
+      setLoading(true);
+      const res = await contractorService.getContractorById(user.workspaceId, id);
+      if (isMounted) {
+        if (res.data) {
+          const con = res.data;
+          setCompanyName(con.companyName);
+          setTrade(con.trade);
+          setContactName(con.primaryContact);
+          setEmail(con.email);
+          setPhone(con.phone || '');
+          setAddress(con.address || '');
+          setContractorType(con.contractorType || 'Subcontractor');
+          setNotes(con.notes || '');
+          setStatus(con.status);
+          setRequirements({
+            insuranceRequired: con.requirements.insuranceRequired,
+            workersCompRequired: con.requirements.workersCompRequired,
+            businessLicenseRequired: con.requirements.businessLicenseRequired,
+            professionalLicenseRequired: con.requirements.professionalLicenseRequired,
+            taxDocumentationRequired: con.requirements.taxDocumentationRequired,
+            safetyDocumentationRequired: con.requirements.safetyDocumentationRequired,
+          });
+        } else {
+          setErrorMessage(res.error || 'Contractor not found');
+        }
+        setLoading(false);
+      }
+    }
+
+    loadContractor();
+
+    return () => {
+      isMounted = false;
+    };
+  }, [id, user?.workspaceId]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    setErrorMessage(null);
+
+    if (!user?.workspaceId || !id) {
+      setErrorMessage('Active workspace or contractor ID missing.');
+      return;
+    }
+
+    if (!companyName.trim()) {
+      setErrorMessage('Company name is required.');
+      return;
+    }
+
+    if (!trade.trim()) {
+      setErrorMessage('Primary trade is required.');
+      return;
+    }
+
+    if (!contactName.trim()) {
+      setErrorMessage('Primary representative name is required.');
+      return;
+    }
+
+    if (!email.trim() || !email.includes('@')) {
+      setErrorMessage('A valid email address is required.');
+      return;
+    }
+
     setSaving(true);
-    setTimeout(() => {
-      setSaving(false);
-      navigate(`/contractors/${id}`);
-    }, 400);
+    setSaved(false);
+
+    const res = await contractorService.updateContractor(user.workspaceId, id, {
+      companyName: companyName.trim(),
+      trade: trade.trim(),
+      primaryContact: contactName.trim(),
+      email: email.trim(),
+      phone: phone.trim() || undefined,
+      address: address.trim() || undefined,
+      contractorType,
+      notes: notes.trim() || undefined,
+      status,
+      requirements,
+    });
+
+    setSaving(false);
+
+    if (res.error || !res.data) {
+      setErrorMessage(res.error || 'Failed to update contractor details.');
+    } else {
+      setSaved(true);
+      setTimeout(() => {
+        navigate(`/contractors/${id}`);
+      }, 500);
+    }
+  };
+
+  const toggleReq = (key: keyof typeof requirements) => {
+    setRequirements(prev => ({
+      ...prev,
+      [key]: !prev[key],
+    }));
   };
 
   if (loading) {
-    return <div className="text-zinc-500 p-8 text-xs">Loading contractor profile...</div>;
+    return (
+      <div className="flex items-center justify-center p-16 text-zinc-500 text-xs">
+        <Loader2 className="w-5 h-5 animate-spin mr-2 text-red-500" />
+        <span>Loading contractor profile...</span>
+      </div>
+    );
   }
 
-  if (!contractor) {
+  if (errorMessage && !companyName) {
     return (
       <div className="text-center py-16">
         <h2 className="text-xl font-bold text-white mb-2">Contractor Not Found</h2>
+        <p className="text-xs text-zinc-400 mb-6">{errorMessage}</p>
         <Button variant="outline" onClick={() => navigate('/contractors')}>Return to Directory</Button>
       </div>
     );
@@ -57,6 +179,13 @@ export function EditContractor() {
         <p className="text-xs text-zinc-400 mt-1">Update subcontractor information and compliance passport settings.</p>
       </div>
 
+      {errorMessage && (
+        <div className="p-3 bg-red-950/50 border border-red-900/80 rounded-xl flex items-center gap-2 text-xs text-red-300">
+          <AlertCircle className="w-4 h-4 shrink-0 text-red-400" />
+          <span>{errorMessage}</span>
+        </div>
+      )}
+
       <form onSubmit={handleSubmit}>
         <Card className="bg-[#0a0a0f] border-zinc-800/80 shadow-2xl">
           <CardHeader className="bg-zinc-950/60 border-b border-zinc-800/80">
@@ -65,40 +194,103 @@ export function EditContractor() {
           <CardContent className="space-y-6 pt-6">
             <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
               <div>
-                <Label htmlFor="companyName">Company Name</Label>
-                <Input id="companyName" required defaultValue={contractor.companyName} />
+                <Label htmlFor="companyName">Company Name *</Label>
+                <Input 
+                  id="companyName" 
+                  required 
+                  value={companyName}
+                  onChange={(e) => setCompanyName(e.target.value)}
+                />
               </div>
               <div>
-                <Label htmlFor="trade">Primary Trade</Label>
-                <Input id="trade" required defaultValue={contractor.trade} />
+                <Label htmlFor="trade">Primary Trade *</Label>
+                <Input 
+                  id="trade" 
+                  required 
+                  value={trade}
+                  onChange={(e) => setTrade(e.target.value)}
+                />
               </div>
             </div>
 
             <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
               <div>
-                <Label htmlFor="contactName">Primary Representative</Label>
-                <Input id="contactName" required defaultValue={contractor.primaryContact} />
+                <Label htmlFor="contactName">Primary Representative *</Label>
+                <Input 
+                  id="contactName" 
+                  required 
+                  value={contactName}
+                  onChange={(e) => setContactName(e.target.value)}
+                />
               </div>
               <div>
-                <Label htmlFor="contactEmail">Email Address</Label>
-                <Input id="contactEmail" type="email" required defaultValue={contractor.email} />
+                <Label htmlFor="contactEmail">Email Address *</Label>
+                <Input 
+                  id="contactEmail" 
+                  type="email" 
+                  required 
+                  value={email}
+                  onChange={(e) => setEmail(e.target.value)}
+                />
               </div>
               <div>
                 <Label htmlFor="contactPhone">Phone Number</Label>
-                <Input id="contactPhone" type="tel" defaultValue={contractor.phone} />
+                <Input 
+                  id="contactPhone" 
+                  type="tel" 
+                  value={phone}
+                  onChange={(e) => setPhone(e.target.value)}
+                />
               </div>
               <div>
                 <Label htmlFor="contractorType">Contractor Type</Label>
                 <select 
                   id="contractorType"
-                  defaultValue={contractor.contractorType}
+                  value={contractorType}
+                  onChange={(e) => setContractorType(e.target.value)}
                   className="flex h-10 w-full rounded-lg border border-zinc-800 bg-[#09090c] px-3 py-2 text-xs text-zinc-100 focus:outline-none focus:ring-2 focus:ring-red-500/80 focus:border-red-500/60 transition-colors"
                 >
                   <option value="Subcontractor">Subcontractor</option>
                   <option value="Independent Contractor">Independent Contractor</option>
-                  <option value="Vendor">Vendor</option>
+                  <option value="Material Supplier">Material Supplier</option>
+                  <option value="Equipment Vendor">Equipment Vendor</option>
                 </select>
               </div>
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+              <div>
+                <Label htmlFor="address">Operating Address</Label>
+                <Input 
+                  id="address" 
+                  value={address}
+                  onChange={(e) => setAddress(e.target.value)}
+                />
+              </div>
+              <div>
+                <Label htmlFor="complianceStatus">Status Override</Label>
+                <select 
+                  id="complianceStatus"
+                  value={status}
+                  onChange={(e) => setStatus(e.target.value as ComplianceStatus)}
+                  className="flex h-10 w-full rounded-lg border border-zinc-800 bg-[#09090c] px-3 py-2 text-xs text-zinc-100 focus:outline-none focus:ring-2 focus:ring-red-500/80 focus:border-red-500/60 transition-colors"
+                >
+                  <option value="COMPLIANT">Compliant</option>
+                  <option value="EXPIRING">Expiring</option>
+                  <option value="NON_COMPLIANT">Non-Compliant</option>
+                  <option value="PENDING_REVIEW">Pending Review</option>
+                </select>
+              </div>
+            </div>
+
+            <div>
+              <Label htmlFor="notes">Internal Compliance Notes</Label>
+              <Input 
+                id="notes" 
+                placeholder="Add special requirements or audit notes..."
+                value={notes}
+                onChange={(e) => setNotes(e.target.value)}
+              />
             </div>
           </CardContent>
 
@@ -109,24 +301,54 @@ export function EditContractor() {
             <p className="text-xs text-zinc-400 mb-4">Select the verification criteria required for this contractor to remain compliant.</p>
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5">
               {[
-                { id: 'insuranceRequired', label: 'General Liability Insurance', val: contractor.requirements.insuranceRequired },
-                { id: 'workersCompRequired', label: 'Workers Compensation Policy', val: contractor.requirements.workersCompRequired },
-                { id: 'businessLicenseRequired', label: 'Business License', val: contractor.requirements.businessLicenseRequired },
-                { id: 'professionalLicenseRequired', label: 'Professional Trade License', val: contractor.requirements.professionalLicenseRequired },
-                { id: 'taxDocumentationRequired', label: 'Tax Documentation (W-9)', val: contractor.requirements.taxDocumentationRequired },
-                { id: 'safetyDocumentationRequired', label: 'Safety Certification (OSHA)', val: contractor.requirements.safetyDocumentationRequired },
-              ].map(req => (
-                <label key={req.id} className="flex items-center space-x-3 p-3 rounded-lg border border-zinc-800 bg-zinc-950/80 cursor-pointer hover:bg-zinc-900/60 hover:border-red-950 transition-colors">
-                  <input type="checkbox" defaultChecked={req.val} className="h-4 w-4 rounded border-zinc-800 bg-black text-red-600 focus:ring-red-600 focus:ring-offset-black cursor-pointer" />
-                  <span className="text-xs font-semibold text-zinc-300">{req.label}</span>
-                </label>
-              ))}
+                { id: 'insuranceRequired', label: 'General Liability Insurance' },
+                { id: 'workersCompRequired', label: 'Workers Compensation Policy' },
+                { id: 'businessLicenseRequired', label: 'Business License' },
+                { id: 'professionalLicenseRequired', label: 'Professional Trade License' },
+                { id: 'taxDocumentationRequired', label: 'Tax Documentation (W-9)' },
+                { id: 'safetyDocumentationRequired', label: 'Safety Certification (OSHA)' },
+              ].map(req => {
+                const key = req.id as keyof typeof requirements;
+                const isChecked = requirements[key];
+                return (
+                  <label 
+                    key={req.id} 
+                    className={`flex items-center space-x-3 p-3 rounded-lg border cursor-pointer transition-colors ${
+                      isChecked 
+                        ? 'border-red-900/60 bg-red-950/20' 
+                        : 'border-zinc-800 bg-zinc-950/80 hover:bg-zinc-900/60'
+                    }`}
+                  >
+                    <input 
+                      type="checkbox" 
+                      checked={isChecked}
+                      onChange={() => toggleReq(key)}
+                      className="h-4 w-4 rounded border-zinc-800 bg-black text-red-600 focus:ring-red-600 focus:ring-offset-black cursor-pointer" 
+                    />
+                    <span className="text-xs font-semibold text-zinc-300">{req.label}</span>
+                  </label>
+                );
+              })}
             </div>
           </CardContent>
 
           <CardFooter className="justify-end gap-3 bg-zinc-950/60 border-t border-zinc-800/80">
-            <Button type="button" variant="ghost" onClick={() => navigate(-1)}>Cancel</Button>
-            <Button type="submit" isLoading={saving}>Save Changes</Button>
+            <Button type="button" variant="ghost" onClick={() => navigate(-1)} disabled={saving}>
+              Cancel
+            </Button>
+            <Button type="submit" disabled={saving}>
+              {saving ? (
+                <span className="flex items-center gap-1.5">
+                  <Loader2 className="w-4 h-4 animate-spin" /> Saving...
+                </span>
+              ) : saved ? (
+                <span className="flex items-center gap-1.5">
+                  <Check className="w-4 h-4 text-emerald-400" /> Saved
+                </span>
+              ) : (
+                'Save Changes'
+              )}
+            </Button>
           </CardFooter>
         </Card>
       </form>

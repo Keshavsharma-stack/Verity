@@ -25,6 +25,7 @@ export const authService = {
   /**
    * Ensures that profile, workspace, and workspace_members records exist
    * for the authenticated user, and returns the populated User model.
+   * Completely idempotent: will not create duplicate workspaces or memberships.
    */
   async ensureUserWorkspaceAndProfile(sbUser: any): Promise<User> {
     if (!sbUser || !sbUser.id) {
@@ -38,7 +39,7 @@ export const authService = {
     try {
       const meta = sbUser.user_metadata || {};
       const fullName = meta.full_name || meta.name || sbUser.email?.split('@')[0] || 'User';
-      const companyName = meta.company_name || 'Acme Construction';
+      const defaultCompanyName = meta.company_name || 'My Organization';
 
       // 1. Check or create Profile
       let profileData: any = null;
@@ -52,75 +53,121 @@ export const authService = {
         if (!profileSelectError && existingProfile) {
           profileData = existingProfile;
         } else {
-          // Insert profile record
+          // Upsert profile record
           const { data: insertedProfile } = await supabase
             .from('profiles')
-            .upsert({
-              id: sbUser.id,
-              email: sbUser.email,
-              full_name: fullName,
-              company_name: companyName,
-              updated_at: new Date().toISOString(),
-            })
+            .upsert(
+              {
+                id: sbUser.id,
+                email: sbUser.email,
+                full_name: fullName,
+                company_name: defaultCompanyName,
+                updated_at: new Date().toISOString(),
+              },
+              { onConflict: 'id' }
+            )
             .select()
             .maybeSingle();
 
-          profileData = insertedProfile || { full_name: fullName, company_name: companyName };
+          profileData = insertedProfile || { full_name: fullName, company_name: defaultCompanyName };
         }
-      } catch (profileErr) {
-        // Fallback gracefully if profiles table is not accessible
-        profileData = { full_name: fullName, company_name: companyName };
+      } catch {
+        profileData = { full_name: fullName, company_name: defaultCompanyName };
       }
 
-      // 2. Check or create Workspace & Membership
+      const activeCompanyName = profileData?.company_name || defaultCompanyName;
+
+      // 2. Check or create Workspace & Membership (Idempotent Multi-Tenant Resolution)
       let resolvedWorkspaceId: string | null = null;
       let resolvedRole = 'ADMIN';
+      let resolvedWorkspaceName = activeCompanyName;
 
       try {
+        // Step A: Check for existing membership
         const { data: existingMemberships, error: memberSelectError } = await supabase
           .from('workspace_members')
-          .select('workspace_id, role')
+          .select('workspace_id, role, workspaces ( id, name, plan, owner_id )')
           .eq('user_id', sbUser.id)
+          .order('created_at', { ascending: true })
           .limit(1);
 
         if (!memberSelectError && existingMemberships && existingMemberships.length > 0) {
-          resolvedWorkspaceId = existingMemberships[0].workspace_id;
-          resolvedRole = existingMemberships[0].role || 'ADMIN';
+          const membership = existingMemberships[0];
+          resolvedWorkspaceId = membership.workspace_id;
+          resolvedRole = membership.role || 'ADMIN';
+          const joinedWorkspace = membership.workspaces as any;
+          if (joinedWorkspace?.name) {
+            resolvedWorkspaceName = joinedWorkspace.name;
+          }
         } else {
-          // Create new workspace
-          const { data: newWorkspace, error: wsError } = await supabase
+          // Step B: Check if user already owns a workspace
+          const { data: ownedWorkspaces, error: ownedSelectError } = await supabase
             .from('workspaces')
-            .insert({
-              name: companyName,
-              owner_id: sbUser.id,
-              plan: 'FREE',
-            })
-            .select()
-            .maybeSingle();
+            .select('id, name, plan, owner_id')
+            .eq('owner_id', sbUser.id)
+            .order('created_at', { ascending: true })
+            .limit(1);
 
-          if (!wsError && newWorkspace?.id) {
-            resolvedWorkspaceId = newWorkspace.id;
+          if (!ownedSelectError && ownedWorkspaces && ownedWorkspaces.length > 0) {
+            const ownedWs = ownedWorkspaces[0];
+            resolvedWorkspaceId = ownedWs.id;
+            resolvedWorkspaceName = ownedWs.name || activeCompanyName;
+            resolvedRole = 'ADMIN';
 
-            // Insert membership
+            // Ensure workspace_members record exists for this owned workspace
             await supabase
               .from('workspace_members')
+              .upsert(
+                {
+                  workspace_id: ownedWs.id,
+                  user_id: sbUser.id,
+                  role: 'ADMIN',
+                },
+                { onConflict: 'workspace_id,user_id' }
+              );
+          } else {
+            // Step C: User is not member of or owner of any workspace; create new workspace
+            const { data: newWorkspace, error: wsError } = await supabase
+              .from('workspaces')
               .insert({
-                workspace_id: newWorkspace.id,
-                user_id: sbUser.id,
-                role: 'ADMIN',
-              });
+                name: activeCompanyName,
+                owner_id: sbUser.id,
+                plan: 'FREE',
+              })
+              .select()
+              .maybeSingle();
+
+            if (!wsError && newWorkspace?.id) {
+              resolvedWorkspaceId = newWorkspace.id;
+              resolvedWorkspaceName = newWorkspace.name;
+              resolvedRole = 'ADMIN';
+
+              // Create workspace_members record
+              await supabase
+                .from('workspace_members')
+                .upsert(
+                  {
+                    workspace_id: newWorkspace.id,
+                    user_id: sbUser.id,
+                    role: 'ADMIN',
+                  },
+                  { onConflict: 'workspace_id,user_id' }
+                );
+            }
           }
         }
-      } catch (wsErr) {
-        // Fallback gracefully if workspaces table is not accessible
+      } catch {
+        // Fallback gracefully if workspaces or workspace_members tables are not accessible
       }
 
-      return mapSupabaseUser(
-        sbUser,
-        profileData,
-        resolvedWorkspaceId || meta.workspace_id,
-        resolvedRole
-      );
+      return {
+        id: sbUser.id,
+        email: sbUser.email || '',
+        name: profileData?.full_name || fullName,
+        companyName: resolvedWorkspaceName || profileData?.company_name || activeCompanyName,
+        workspaceId: resolvedWorkspaceId || meta.workspace_id || `ws_${sbUser.id.substring(0, 8)}`,
+        role: (resolvedRole as 'ADMIN' | 'MEMBER' | 'VIEWER') || 'ADMIN',
+      };
     } catch {
       return mapSupabaseUser(sbUser);
     }

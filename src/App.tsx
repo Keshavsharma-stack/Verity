@@ -15,6 +15,9 @@ import { Login } from './pages/public/Login';
 import { Signup } from './pages/public/Signup';
 import { ForgotPassword } from './pages/public/ForgotPassword';
 import { ResetPassword } from './pages/public/ResetPassword';
+import { Privacy } from './pages/public/Privacy';
+import { Terms } from './pages/public/Terms';
+import { RefundPolicy } from './pages/public/RefundPolicy';
 
 import { Dashboard } from './pages/app/Dashboard';
 import { Contractors } from './pages/app/Contractors';
@@ -39,6 +42,9 @@ export default function App() {
             <Route path="/signup" element={<Signup />} />
             <Route path="/forgot-password" element={<ForgotPassword />} />
             <Route path="/reset-password" element={<ResetPassword />} />
+            <Route path="/privacy" element={<Privacy />} />
+            <Route path="/terms" element={<Terms />} />
+            <Route path="/refund-policy" element={<RefundPolicy />} />
           </Route>
 
           {/* Authenticated Application Routes */}

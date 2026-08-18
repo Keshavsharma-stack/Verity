@@ -153,15 +153,18 @@ export function PublicLayout() {
               <Link to="/pricing" className="hover:text-white transition-colors">Pricing</Link>
               <Link to="/login" className="hover:text-white transition-colors">Login</Link>
               <Link to="/signup" className="hover:text-white transition-colors">Create Account</Link>
+              <Link to="/privacy" className="hover:text-white transition-colors">Privacy</Link>
+              <Link to="/terms" className="hover:text-white transition-colors">Terms</Link>
+              <Link to="/refund-policy" className="hover:text-white transition-colors">Refunds</Link>
             </div>
           </div>
 
           <div className="pt-8 flex flex-col sm:flex-row justify-between items-center gap-4 text-xs text-zinc-500 font-medium">
             <p>© {new Date().getFullYear()} Verity Compliance Inc. All rights reserved.</p>
             <div className="flex items-center gap-4">
-              <span>Security Audited</span>
+              <span>Secure Cloud Infrastructure</span>
               <span>•</span>
-              <span>SOC2 Compliant Architecture</span>
+              <span>Workspace-Level Access Controls</span>
             </div>
           </div>
         </div>

@@ -40,11 +40,6 @@ export function Landing() {
             
             {/* Left Column: Copy */}
             <div className="lg:col-span-6 max-w-xl">
-              <div className="inline-flex items-center gap-2 px-3 py-1.5 rounded-full bg-red-950/70 border border-red-800/60 text-red-300 text-xs font-semibold tracking-wider uppercase mb-6 shadow-sm shadow-red-950">
-                <Sparkles className="w-3.5 h-3.5 text-red-400" />
-                <span>Next-Gen Compliance Intelligence</span>
-              </div>
-              
               <h1 className="text-4xl sm:text-5xl lg:text-6xl font-bold tracking-tight text-white mb-6 leading-[1.12]">
                 Know which contractors are <span className="text-transparent bg-clip-text bg-gradient-to-r from-red-400 via-rose-400 to-red-500">compliant</span> before they step onto your site.
               </h1>

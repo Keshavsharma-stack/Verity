@@ -1,10 +1,10 @@
 import React from 'react';
 import { cn } from '../../lib/utils';
-import { ComplianceStatus } from '../../types';
+import { ComplianceStatus, ComplianceGateStatus } from '../../types';
 
 export interface BadgeProps extends React.HTMLAttributes<HTMLSpanElement> {
   variant?: 'default' | 'success' | 'warning' | 'danger' | 'neutral' | 'crimson';
-  status?: ComplianceStatus;
+  status?: ComplianceStatus | ComplianceGateStatus;
   className?: string;
   children?: React.ReactNode;
 }
@@ -12,10 +12,10 @@ export interface BadgeProps extends React.HTMLAttributes<HTMLSpanElement> {
 export function Badge({ className, variant = 'default', status, children, ...props }: BadgeProps) {
   let mappedVariant = variant;
   if (status) {
-    if (status === 'COMPLIANT') mappedVariant = 'success';
+    if (status === 'COMPLIANT' || status === 'READY') mappedVariant = 'success';
     else if (status === 'EXPIRING') mappedVariant = 'warning';
-    else if (status === 'NON_COMPLIANT') mappedVariant = 'danger';
-    else if (status === 'PENDING_REVIEW') mappedVariant = 'neutral';
+    else if (status === 'NON_COMPLIANT' || status === 'NOT_READY') mappedVariant = 'danger';
+    else if (status === 'PENDING_REVIEW' || status === 'REVIEW_REQUIRED') mappedVariant = 'warning';
   }
 
   const variants = {
@@ -36,7 +36,7 @@ export function Badge({ className, variant = 'default', status, children, ...pro
       )}
       {...props}
     >
-      {children || (status && status.replace('_', ' '))}
+      {children || (status && status.replace(/_/g, ' '))}
     </span>
   );
 }

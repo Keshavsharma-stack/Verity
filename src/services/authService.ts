@@ -1,14 +1,21 @@
 import { supabase, isSupabaseConfigured } from '../lib/supabase';
 import { User, SignUpParams, SignInParams } from '../types';
 
+export function isValidUUID(str: string | null | undefined): boolean {
+  if (!str) return false;
+  const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+  return uuidRegex.test(str);
+}
+
 export function mapSupabaseUser(sbUser: any, profile?: any, workspaceId?: string, role?: string): User {
   const meta = sbUser?.user_metadata || {};
+  const validWs = isValidUUID(workspaceId) ? workspaceId : (isValidUUID(meta.workspace_id) ? meta.workspace_id : (isSupabaseConfigured() ? '' : `ws_${(sbUser?.id || 'default').substring(0, 8)}`));
   return {
     id: sbUser?.id || '',
     email: sbUser?.email || '',
     name: profile?.full_name || meta.full_name || meta.name || sbUser?.email?.split('@')[0] || 'User',
     companyName: profile?.company_name || meta.company_name || 'Acme Construction',
-    workspaceId: workspaceId || meta.workspace_id || `ws_${(sbUser?.id || 'default').substring(0, 8)}`,
+    workspaceId: validWs,
     role: (role as 'ADMIN' | 'MEMBER' | 'VIEWER') || (meta.role as 'ADMIN' | 'MEMBER' | 'VIEWER') || 'ADMIN',
   };
 }
@@ -160,12 +167,18 @@ export const authService = {
         // Fallback gracefully if workspaces or workspace_members tables are not accessible
       }
 
+      const finalWsId = isValidUUID(resolvedWorkspaceId) 
+        ? resolvedWorkspaceId! 
+        : (isValidUUID(meta.workspace_id) 
+            ? meta.workspace_id 
+            : (isSupabaseConfigured() ? '' : `ws_${sbUser.id.substring(0, 8)}`));
+
       return {
         id: sbUser.id,
         email: sbUser.email || '',
         name: profileData?.full_name || fullName,
         companyName: resolvedWorkspaceName || profileData?.company_name || activeCompanyName,
-        workspaceId: resolvedWorkspaceId || meta.workspace_id || `ws_${sbUser.id.substring(0, 8)}`,
+        workspaceId: finalWsId,
         role: (resolvedRole as 'ADMIN' | 'MEMBER' | 'VIEWER') || 'ADMIN',
       };
     } catch {

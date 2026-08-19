@@ -695,7 +695,7 @@ export const complianceService = {
    */
   mapGateStatusToDbStatus(gateResult: ComplianceGateResult): ComplianceStatus {
     if (gateResult.status === 'NOT_READY') return 'NON_COMPLIANT';
-    if (gateResult.status === 'REVIEW_REQUIRED') return 'PENDING_REVIEW';
+    if (gateResult.status === 'REVIEW_REQUIRED') return 'NON_COMPLIANT';
     if (gateResult.expiringCount > 0) return 'EXPIRING';
     return 'COMPLIANT';
   },

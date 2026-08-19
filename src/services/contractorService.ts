@@ -196,7 +196,7 @@ export const contractorService = {
           contractor_type: input.contractorType || 'Subcontractor',
           trade: input.trade.trim(),
           notes: input.notes?.trim() || null,
-          status: 'PENDING_REVIEW',
+          status: 'NON_COMPLIANT',
         })
         .select()
         .single();

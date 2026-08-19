@@ -2,7 +2,7 @@ import React, { useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { Button } from '../../components/ui/Button';
 import { Input, Label } from '../../components/ui/Input';
-import { ShieldCheck, AlertCircle, Loader2, CheckCircle2, ArrowRight } from 'lucide-react';
+import { ShieldCheck, AlertCircle, Loader2, CheckCircle2, ArrowRight, Eye, EyeOff } from 'lucide-react';
 import { useAuth } from '../../hooks/useAuth';
 
 export function Signup() {
@@ -16,6 +16,9 @@ export function Signup() {
     password: '',
     confirmPassword: '',
   });
+
+  const [showPassword, setShowPassword] = useState(false);
+  const [showConfirmPassword, setShowConfirmPassword] = useState(false);
 
   const [errors, setErrors] = useState<{ [key: string]: string }>({});
   const [formError, setFormError] = useState<string | null>(null);
@@ -198,7 +201,7 @@ export function Signup() {
                 <Input
                   id="password"
                   name="password"
-                  type="password"
+                  type={showPassword ? 'text' : 'password'}
                   autoComplete="new-password"
                   required
                   placeholder="Minimum 6 characters"
@@ -206,6 +209,17 @@ export function Signup() {
                   onChange={handleChange}
                   disabled={submitting}
                   error={errors.password}
+                  rightElement={
+                    <button
+                      type="button"
+                      onClick={() => setShowPassword(!showPassword)}
+                      aria-label={showPassword ? 'Hide password' : 'Show password'}
+                      title={showPassword ? 'Hide password' : 'Show password'}
+                      className="text-zinc-400 hover:text-zinc-200 focus:outline-none focus:text-white transition-colors p-1"
+                    >
+                      {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                    </button>
+                  }
                 />
               </div>
 
@@ -214,7 +228,7 @@ export function Signup() {
                 <Input
                   id="confirmPassword"
                   name="confirmPassword"
-                  type="password"
+                  type={showConfirmPassword ? 'text' : 'password'}
                   autoComplete="new-password"
                   required
                   placeholder="Repeat your password"
@@ -222,6 +236,17 @@ export function Signup() {
                   onChange={handleChange}
                   disabled={submitting}
                   error={errors.confirmPassword}
+                  rightElement={
+                    <button
+                      type="button"
+                      onClick={() => setShowConfirmPassword(!showConfirmPassword)}
+                      aria-label={showConfirmPassword ? 'Hide password' : 'Show password'}
+                      title={showConfirmPassword ? 'Hide password' : 'Show password'}
+                      className="text-zinc-400 hover:text-zinc-200 focus:outline-none focus:text-white transition-colors p-1"
+                    >
+                      {showConfirmPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                    </button>
+                  }
                 />
               </div>
 

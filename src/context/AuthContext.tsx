@@ -57,6 +57,21 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         if (initialSession?.user && initialUser) {
           setSession(initialSession);
           setUser(initialUser);
+          if (typeof window !== 'undefined') {
+            const path = window.location.pathname;
+            const hash = window.location.hash || '';
+            const search = window.location.search || '';
+            if (
+              path === '/' ||
+              path === '/login' ||
+              path === '/signup' ||
+              hash.includes('access_token') ||
+              search.includes('type=signup') ||
+              search.includes('type=email')
+            ) {
+              window.location.replace('/dashboard');
+            }
+          }
         } else {
           setSession(null);
           setUser(null);
@@ -99,6 +114,21 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         if (isMounted) {
           setUser(resolvedUser);
           setLoading(false);
+        }
+        if (typeof window !== 'undefined') {
+          const path = window.location.pathname;
+          const hash = window.location.hash || '';
+          const search = window.location.search || '';
+          if (
+            path === '/' ||
+            path === '/login' ||
+            path === '/signup' ||
+            hash.includes('access_token') ||
+            search.includes('type=signup') ||
+            search.includes('type=email')
+          ) {
+            window.location.replace('/dashboard');
+          }
         }
       } else if (event === 'SIGNED_OUT' || !currentSession) {
         if (isMounted) {

@@ -163,9 +163,60 @@ export function Expirations() {
           <h1 className="text-2xl font-bold text-white tracking-tight">Expiration Radar & Renewal Center</h1>
           <p className="text-xs font-medium text-zinc-400 mt-1">Automatic 30/15/7/1-day risk monitoring and automated subcontractor document requests.</p>
         </div>
-        <Button variant="outline" size="sm" onClick={loadData}>
-          <RefreshCw className="w-3.5 h-3.5 mr-1.5" /> Refresh Radar
-        </Button>
+        <div className="flex gap-2">
+          <Button 
+            variant="outline" 
+            size="sm" 
+            onClick={async () => {
+              try {
+                setLoading(true);
+                const { supabase } = await import('../../lib/supabase');
+                const token = (await supabase?.auth.getSession())?.data.session?.access_token;
+                const res = await fetch('/api/cron/test-e2e', {
+                  method: 'POST',
+                  headers: { Authorization: `Bearer ${token}` }
+                });
+                const data = await res.json();
+                if (data.success) {
+                  setNotification({ type: 'success', message: `Test run successfully! Created test document, generated 1 notification for CRITICAL, idempotency verified. Notifications generated: ${data.notificationsGenerated}` });
+                } else {
+                  setNotification({ type: 'error', message: 'Test failed: ' + data.error });
+                }
+              } catch (e: any) {
+                setNotification({ type: 'error', message: e.message });
+              } finally {
+                loadData();
+              }
+            }}
+            className="border-red-900/50 text-red-400 hover:bg-red-950 hover:text-red-300"
+          >
+            Run E2E Test
+          </Button>
+          <Button 
+            variant="outline" 
+            size="sm" 
+            onClick={async () => {
+              try {
+                const { supabase } = await import('../../lib/supabase');
+                const token = (await supabase?.auth.getSession())?.data.session?.access_token;
+                await fetch('/api/cron/test-e2e?cleanup=true', {
+                  method: 'POST',
+                  headers: { Authorization: `Bearer ${token}` }
+                });
+                setNotification({ type: 'info', message: 'Test data cleaned up.' });
+                loadData();
+              } catch (e: any) {
+                setNotification({ type: 'error', message: e.message });
+              }
+            }}
+            className="border-zinc-800"
+          >
+            Cleanup Test Data
+          </Button>
+          <Button variant="outline" size="sm" onClick={loadData}>
+            <RefreshCw className="w-3.5 h-3.5 mr-1.5" /> Refresh Radar
+          </Button>
+        </div>
       </div>
 
       {/* Real-time Notification Banner */}

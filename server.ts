@@ -1,3 +1,4 @@
+import testE2eHandler from './api/cron/test-e2e';
 import express from 'express';
 import path from 'path';
 import { createServer as createViteServer } from 'vite';
@@ -117,6 +118,11 @@ app.post('/api/notifications/mark-all-read', async (req, res) => {
 // -----------------------------------------------------------------------------
 app.all('/api/cron/process-expirations', async (req, res) => {
   return handleCronProcessExpirations(req, res);
+});
+
+
+app.post('/api/cron/test-e2e', async (req, res) => {
+  return testE2eHandler(req, res);
 });
 
 // -----------------------------------------------------------------------------

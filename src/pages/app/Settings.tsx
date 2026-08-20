@@ -5,6 +5,7 @@ import { Input, Label } from '../../components/ui/Input';
 import { NavLink, Outlet, Navigate, useLocation } from 'react-router-dom';
 import { Building2, Users, CreditCard, CheckCircle2, Check, Loader2 } from 'lucide-react';
 import { useAuth } from '../../hooks/useAuth';
+import { TestPipelineUI } from '../../components/TestPipelineUI';
 import { supabase, isSupabaseConfigured } from '../../lib/supabase';
 
 export function Settings() {
@@ -100,6 +101,7 @@ export function SettingsCompany() {
   };
 
   return (
+    <>
     <Card className="bg-[#0a0a0f] border-zinc-800/80 shadow-2xl">
       <CardHeader className="bg-zinc-950/60 border-b border-zinc-800/80">
         <CardTitle className="text-sm font-bold text-zinc-200">Company Information</CardTitle>
@@ -150,6 +152,9 @@ export function SettingsCompany() {
         </div>
       </CardContent>
     </Card>
+    
+    <TestPipelineUI />
+    </>
   );
 }
 

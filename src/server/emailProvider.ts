@@ -171,3 +171,25 @@ export async function sendTransactionalEmail(options: EmailDispatchOptions): Pro
     error: 'Email provider credentials not configured. Please set RESEND_API_KEY, SENDGRID_API_KEY, or POSTMARK_API_KEY in server environment.',
   };
 }
+
+export function getEmailProviderConfig(): {
+  provider: 'RESEND' | 'SENDGRID' | 'POSTMARK' | 'SMTP' | 'NONE';
+  configured: boolean;
+  from?: string;
+} {
+  const from = process.env.EMAIL_FROM || 'Verity Compliance <notifications@veritycompliance.com>';
+  if (process.env.RESEND_API_KEY) {
+    return { provider: 'RESEND', configured: true, from };
+  }
+  if (process.env.SENDGRID_API_KEY) {
+    return { provider: 'SENDGRID', configured: true, from };
+  }
+  if (process.env.POSTMARK_API_KEY) {
+    return { provider: 'POSTMARK', configured: true, from };
+  }
+  if (process.env.SMTP_HOST) {
+    return { provider: 'SMTP', configured: true, from };
+  }
+  return { provider: 'NONE', configured: false, from };
+}
+

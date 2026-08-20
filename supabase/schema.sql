@@ -210,6 +210,32 @@ CREATE TABLE IF NOT EXISTS public.reminders (
     UNIQUE(document_id, checkpoint)
 );
 
+-- 10. NOTIFICATIONS (Persistent Expiration Radar & Workspace Compliance Alerts)
+CREATE TABLE IF NOT EXISTS public.notifications (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    workspace_id UUID NOT NULL REFERENCES public.workspaces(id) ON DELETE CASCADE,
+    contractor_id UUID REFERENCES public.contractors(id) ON DELETE CASCADE,
+    document_id UUID REFERENCES public.documents(id) ON DELETE CASCADE,
+    type TEXT NOT NULL,
+    checkpoint TEXT NOT NULL,
+    title TEXT NOT NULL,
+    message TEXT NOT NULL,
+    urgency TEXT NOT NULL CHECK (urgency IN ('CRITICAL', 'WARNING', 'INFO', 'LOW')) DEFAULT 'INFO',
+    document_name TEXT NOT NULL,
+    contractor_name TEXT NOT NULL,
+    expiration_date TIMESTAMP WITH TIME ZONE,
+    days_remaining INTEGER,
+    action_url TEXT,
+    read BOOLEAN NOT NULL DEFAULT false,
+    read_at TIMESTAMP WITH TIME ZONE,
+    email_status TEXT NOT NULL CHECK (email_status IN ('SENT', 'PENDING', 'NOT_CONFIGURED', 'FAILED', 'NONE')) DEFAULT 'NOT_CONFIGURED',
+    email_sent_at TIMESTAMP WITH TIME ZONE,
+    email_error TEXT,
+    metadata JSONB DEFAULT '{}'::jsonb,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT timezone('utc'::text, now()) NOT NULL,
+    UNIQUE(workspace_id, document_id, checkpoint, expiration_date)
+);
+
 -- ==============================================================================
 -- ROW LEVEL SECURITY (RLS) POLICIES
 -- ==============================================================================
@@ -226,15 +252,42 @@ ALTER TABLE public.documents ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.activities ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.subscriptions ENABLE ROW LEVEL SECURITY;
 
--- Helper function to check workspace membership
+-- Helper function to check workspace membership and ownership
 CREATE OR REPLACE FUNCTION public.is_workspace_member(ws_id UUID)
 RETURNS BOOLEAN AS $$
 BEGIN
+  IF auth.uid() IS NULL OR ws_id IS NULL THEN
+    RETURN FALSE;
+  END IF;
+
   RETURN EXISTS (
     SELECT 1 FROM public.workspace_members
     WHERE workspace_id = ws_id
     AND user_id = auth.uid()
+  ) OR EXISTS (
+    SELECT 1 FROM public.workspaces
+    WHERE id = ws_id
+    AND owner_id = auth.uid()
   );
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER;
+
+-- Storage helper function to safely extract workspace UUID from storage path
+CREATE OR REPLACE FUNCTION public.get_storage_workspace_id(path_str TEXT)
+RETURNS UUID AS $$
+DECLARE
+  uuid_str TEXT;
+BEGIN
+  IF path_str IS NULL THEN
+    RETURN NULL;
+  END IF;
+  uuid_str := substring(path_str from '([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})');
+  IF uuid_str IS NOT NULL THEN
+    RETURN uuid_str::uuid;
+  END IF;
+  RETURN NULL;
+EXCEPTION WHEN OTHERS THEN
+  RETURN NULL;
 END;
 $$ LANGUAGE plpgsql SECURITY DEFINER;
 
@@ -299,29 +352,62 @@ CREATE POLICY "Workspace members can delete compliance" ON public.compliance_req
 
 -- Documents: members can read and write documents in their workspace
 CREATE POLICY "Workspace members can view documents" ON public.documents
-    FOR SELECT USING (public.is_workspace_member(workspace_id));
+    FOR SELECT TO authenticated
+    USING (public.is_workspace_member(workspace_id));
 
 CREATE POLICY "Workspace members can insert documents" ON public.documents
-    FOR INSERT WITH CHECK (public.is_workspace_member(workspace_id));
+    FOR INSERT TO authenticated
+    WITH CHECK (
+        public.is_workspace_member(workspace_id)
+        AND EXISTS (
+            SELECT 1 FROM public.contractors c
+            WHERE c.id = contractor_id
+            AND c.workspace_id = documents.workspace_id
+        )
+    );
 
 CREATE POLICY "Workspace members can update documents" ON public.documents
-    FOR UPDATE USING (public.is_workspace_member(workspace_id));
+    FOR UPDATE TO authenticated
+    USING (public.is_workspace_member(workspace_id))
+    WITH CHECK (
+        public.is_workspace_member(workspace_id)
+        AND (
+            contractor_id IS NULL OR EXISTS (
+                SELECT 1 FROM public.contractors c
+                WHERE c.id = contractor_id
+                AND c.workspace_id = documents.workspace_id
+            )
+        )
+    );
 
 CREATE POLICY "Workspace members can delete documents" ON public.documents
-    FOR DELETE USING (public.is_workspace_member(workspace_id));
+    FOR DELETE TO authenticated
+    USING (public.is_workspace_member(workspace_id));
 
 -- Document Extractions: members can view and insert extractions in their workspace
 CREATE POLICY "Workspace members can view document_extractions" ON public.document_extractions
-    FOR SELECT USING (public.is_workspace_member(workspace_id));
+    FOR SELECT TO authenticated
+    USING (public.is_workspace_member(workspace_id));
 
 CREATE POLICY "Workspace members can insert document_extractions" ON public.document_extractions
-    FOR INSERT WITH CHECK (public.is_workspace_member(workspace_id));
+    FOR INSERT TO authenticated
+    WITH CHECK (
+        public.is_workspace_member(workspace_id)
+        AND EXISTS (
+            SELECT 1 FROM public.documents d
+            WHERE d.id = document_id
+            AND d.workspace_id = document_extractions.workspace_id
+        )
+    );
 
 CREATE POLICY "Workspace members can update document_extractions" ON public.document_extractions
-    FOR UPDATE USING (public.is_workspace_member(workspace_id));
+    FOR UPDATE TO authenticated
+    USING (public.is_workspace_member(workspace_id))
+    WITH CHECK (public.is_workspace_member(workspace_id));
 
 CREATE POLICY "Workspace members can delete document_extractions" ON public.document_extractions
-    FOR DELETE USING (public.is_workspace_member(workspace_id));
+    FOR DELETE TO authenticated
+    USING (public.is_workspace_member(workspace_id));
 
 -- Activities: members can view workspace activities
 CREATE POLICY "Workspace members can view activities" ON public.activities
@@ -345,6 +431,21 @@ CREATE POLICY "Workspace members can update reminders" ON public.reminders
     FOR UPDATE USING (public.is_workspace_member(workspace_id));
 
 CREATE POLICY "Workspace members can delete reminders" ON public.reminders
+    FOR DELETE USING (public.is_workspace_member(workspace_id));
+
+-- Notifications: members can view, create, update, and delete notifications in their workspace
+ALTER TABLE public.notifications ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY "Workspace members can view notifications" ON public.notifications
+    FOR SELECT USING (public.is_workspace_member(workspace_id));
+
+CREATE POLICY "Workspace members can insert notifications" ON public.notifications
+    FOR INSERT WITH CHECK (public.is_workspace_member(workspace_id));
+
+CREATE POLICY "Workspace members can update notifications" ON public.notifications
+    FOR UPDATE USING (public.is_workspace_member(workspace_id));
+
+CREATE POLICY "Workspace members can delete notifications" ON public.notifications
     FOR DELETE USING (public.is_workspace_member(workspace_id));
 
 -- ==============================================================================
@@ -410,43 +511,31 @@ ON CONFLICT (id) DO NOTHING;
 -- Workspace members can read storage objects belonging to their workspace:
 -- Path convention: workspace/{workspaceId}/contractors/{contractorId}/...
 CREATE POLICY "Workspace members can view stored documents"
-ON storage.objects FOR SELECT
+ON storage.objects FOR SELECT TO authenticated
 USING (
   bucket_id = 'documents'
-  AND (
-    public.is_workspace_member((storage.foldername(name))[2]::uuid)
-    OR public.is_workspace_member((storage.foldername(name))[1]::uuid)
-  )
+  AND public.is_workspace_member(public.get_storage_workspace_id(name))
 );
 
 CREATE POLICY "Workspace members can upload stored documents"
-ON storage.objects FOR INSERT
+ON storage.objects FOR INSERT TO authenticated
 WITH CHECK (
   bucket_id = 'documents'
-  AND (
-    public.is_workspace_member((storage.foldername(name))[2]::uuid)
-    OR public.is_workspace_member((storage.foldername(name))[1]::uuid)
-  )
+  AND public.is_workspace_member(public.get_storage_workspace_id(name))
 );
 
 CREATE POLICY "Workspace members can update stored documents"
-ON storage.objects FOR UPDATE
+ON storage.objects FOR UPDATE TO authenticated
 USING (
   bucket_id = 'documents'
-  AND (
-    public.is_workspace_member((storage.foldername(name))[2]::uuid)
-    OR public.is_workspace_member((storage.foldername(name))[1]::uuid)
-  )
+  AND public.is_workspace_member(public.get_storage_workspace_id(name))
 );
 
 CREATE POLICY "Workspace members can delete stored documents"
-ON storage.objects FOR DELETE
+ON storage.objects FOR DELETE TO authenticated
 USING (
   bucket_id = 'documents'
-  AND (
-    public.is_workspace_member((storage.foldername(name))[2]::uuid)
-    OR public.is_workspace_member((storage.foldername(name))[1]::uuid)
-  )
+  AND public.is_workspace_member(public.get_storage_workspace_id(name))
 );
 
 
@@ -547,5 +636,8 @@ CREATE INDEX IF NOT EXISTS idx_activities_workspace_id ON public.activities(work
 CREATE INDEX IF NOT EXISTS idx_subscriptions_workspace_id ON public.subscriptions(workspace_id);
 CREATE INDEX IF NOT EXISTS idx_reminders_workspace_id ON public.reminders(workspace_id);
 CREATE INDEX IF NOT EXISTS idx_reminders_scheduled_for ON public.reminders(scheduled_for);
+CREATE INDEX IF NOT EXISTS idx_notifications_workspace_id ON public.notifications(workspace_id);
+CREATE INDEX IF NOT EXISTS idx_notifications_read ON public.notifications(workspace_id, read);
+CREATE INDEX IF NOT EXISTS idx_notifications_created_at ON public.notifications(workspace_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_stripe_events_event_id ON public.stripe_events(event_id);
 

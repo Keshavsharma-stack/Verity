@@ -90,66 +90,96 @@ export const authService = {
       let resolvedWorkspaceName = activeCompanyName;
 
       try {
-        // Step A: Check for existing membership
-        const { data: existingMemberships, error: memberSelectError } = await supabase
+        // Step A: Check for existing membership in workspace_members (pure select without nested embedding)
+        const { data: memberRows, error: memberSelectError } = await supabase
           .from('workspace_members')
-          .select('workspace_id, role, workspaces ( id, name, plan, owner_id )')
+          .select('workspace_id, role')
           .eq('user_id', sbUser.id)
-          .order('created_at', { ascending: true })
-          .limit(1);
+          .order('created_at', { ascending: true });
 
-        if (!memberSelectError && existingMemberships && existingMemberships.length > 0) {
-          const membership = existingMemberships[0];
-          resolvedWorkspaceId = membership.workspace_id;
-          resolvedRole = membership.role || 'ADMIN';
-          const joinedWorkspace = membership.workspaces as any;
-          if (joinedWorkspace?.name) {
-            resolvedWorkspaceName = joinedWorkspace.name;
+        if (!memberSelectError && memberRows && memberRows.length > 0) {
+          for (const m of memberRows) {
+            if (isValidUUID(m.workspace_id)) {
+              resolvedWorkspaceId = m.workspace_id;
+              resolvedRole = m.role || 'ADMIN';
+              break;
+            }
           }
-        } else {
-          // Step B: Check if user already owns a workspace
+
+          if (resolvedWorkspaceId) {
+            try {
+              const { data: wsData } = await supabase
+                .from('workspaces')
+                .select('id, name')
+                .eq('id', resolvedWorkspaceId)
+                .maybeSingle();
+
+              if (wsData?.name) {
+                resolvedWorkspaceName = wsData.name;
+              }
+            } catch {
+              // Non-fatal, use company name
+            }
+          }
+        }
+
+        // Step B: Check if user owns an existing workspace in workspaces table
+        if (!resolvedWorkspaceId) {
           const { data: ownedWorkspaces, error: ownedSelectError } = await supabase
             .from('workspaces')
             .select('id, name, plan, owner_id')
             .eq('owner_id', sbUser.id)
-            .order('created_at', { ascending: true })
-            .limit(1);
+            .order('created_at', { ascending: true });
 
           if (!ownedSelectError && ownedWorkspaces && ownedWorkspaces.length > 0) {
-            const ownedWs = ownedWorkspaces[0];
-            resolvedWorkspaceId = ownedWs.id;
-            resolvedWorkspaceName = ownedWs.name || activeCompanyName;
+            for (const ow of ownedWorkspaces) {
+              if (isValidUUID(ow.id)) {
+                resolvedWorkspaceId = ow.id;
+                resolvedWorkspaceName = ow.name || activeCompanyName;
+                resolvedRole = 'ADMIN';
+                break;
+              }
+            }
+
+            if (resolvedWorkspaceId) {
+              // Ensure workspace_members record exists for this owned workspace
+              try {
+                await supabase
+                  .from('workspace_members')
+                  .upsert(
+                    {
+                      workspace_id: resolvedWorkspaceId,
+                      user_id: sbUser.id,
+                      role: 'ADMIN',
+                    },
+                    { onConflict: 'workspace_id,user_id' }
+                  );
+              } catch {
+                // Non-fatal if upsert has constraint or RLS block
+              }
+            }
+          }
+        }
+
+        // Step C: User is not member of or owner of any workspace; create new workspace
+        if (!resolvedWorkspaceId) {
+          const { data: newWorkspace, error: wsError } = await supabase
+            .from('workspaces')
+            .insert({
+              name: activeCompanyName,
+              owner_id: sbUser.id,
+              plan: 'FREE',
+            })
+            .select('id, name, plan, owner_id')
+            .maybeSingle();
+
+          if (!wsError && newWorkspace?.id && isValidUUID(newWorkspace.id)) {
+            resolvedWorkspaceId = newWorkspace.id;
+            resolvedWorkspaceName = newWorkspace.name;
             resolvedRole = 'ADMIN';
 
-            // Ensure workspace_members record exists for this owned workspace
-            await supabase
-              .from('workspace_members')
-              .upsert(
-                {
-                  workspace_id: ownedWs.id,
-                  user_id: sbUser.id,
-                  role: 'ADMIN',
-                },
-                { onConflict: 'workspace_id,user_id' }
-              );
-          } else {
-            // Step C: User is not member of or owner of any workspace; create new workspace
-            const { data: newWorkspace, error: wsError } = await supabase
-              .from('workspaces')
-              .insert({
-                name: activeCompanyName,
-                owner_id: sbUser.id,
-                plan: 'FREE',
-              })
-              .select()
-              .maybeSingle();
-
-            if (!wsError && newWorkspace?.id) {
-              resolvedWorkspaceId = newWorkspace.id;
-              resolvedWorkspaceName = newWorkspace.name;
-              resolvedRole = 'ADMIN';
-
-              // Create workspace_members record
+            // Create workspace_members record
+            try {
               await supabase
                 .from('workspace_members')
                 .upsert(
@@ -160,11 +190,21 @@ export const authService = {
                   },
                   { onConflict: 'workspace_id,user_id' }
                 );
+            } catch {
+              // Non-fatal
             }
           }
         }
+
+        // Step D: Fallback to metadata if valid UUID is present
+        if (!resolvedWorkspaceId && isValidUUID(meta.workspace_id)) {
+          resolvedWorkspaceId = meta.workspace_id;
+        }
       } catch {
         // Fallback gracefully if workspaces or workspace_members tables are not accessible
+        if (!resolvedWorkspaceId && isValidUUID(meta.workspace_id)) {
+          resolvedWorkspaceId = meta.workspace_id;
+        }
       }
 
       const finalWsId = isValidUUID(resolvedWorkspaceId) 

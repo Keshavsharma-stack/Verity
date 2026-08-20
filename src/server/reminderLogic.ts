@@ -148,7 +148,7 @@ export async function handleSendNotification(req: any, res: any) {
     });
 
     const nowIso = new Date().toISOString();
-    const reminderStatus = dispatchResult.success ? 'SENT' : 'FAILED';
+    const reminderStatus = dispatchResult.success ? 'SENT' : (dispatchResult.status === 'CONFIG_REQUIRED' ? 'PENDING' : 'FAILED');
     const errorMessage = dispatchResult.error || undefined;
 
     // 8. Update / Upsert into reminders table (Audit & Idempotency)
@@ -181,15 +181,25 @@ export async function handleSendNotification(req: any, res: any) {
 
     // 9. Write audit log entry in activities table
     try {
+      const actionTitle = dispatchResult.success
+        ? 'NOTIFICATION_DISPATCHED'
+        : dispatchResult.status === 'CONFIG_REQUIRED'
+        ? 'RENEWAL_REQUEST_RECORDED'
+        : 'NOTIFICATION_FAILED';
+
+      const actionDesc = dispatchResult.success
+        ? `Dispatched ${templateType} email notification to ${recipientEmail} for ${contractor.company_name}`
+        : dispatchResult.status === 'CONFIG_REQUIRED'
+        ? `Recorded renewal request for ${contractor.company_name} (${document?.name || 'document'}). Email delivery pending (email service not configured).`
+        : `Failed to dispatch notification to ${recipientEmail}: ${errorMessage || 'Unknown error'}`;
+
       await supabase.from('activities').insert({
         workspace_id: workspaceId,
         contractor_id: contractorId,
         document_id: documentId || null,
         user_id: userId,
-        action: dispatchResult.success ? 'NOTIFICATION_DISPATCHED' : 'NOTIFICATION_FAILED',
-        description: dispatchResult.success
-          ? `Dispatched ${templateType} email notification to ${recipientEmail} for ${contractor.company_name}`
-          : `Failed to dispatch notification to ${recipientEmail}: ${errorMessage || 'Unknown error'}`,
+        action: actionTitle,
+        description: actionDesc,
       });
     } catch {
       // Activity insert non-blocking
@@ -197,17 +207,22 @@ export async function handleSendNotification(req: any, res: any) {
 
     if (!dispatchResult.success) {
       if (dispatchResult.status === 'CONFIG_REQUIRED') {
-        return res.status(503).json({
-          success: false,
+        return res.status(200).json({
+          success: true,
+          emailSent: false,
           status: 'CONFIG_REQUIRED',
-          error: dispatchResult.error,
+          message: 'Renewal request recorded in database. Email delivery pending (Email service not configured in server environment).',
           provider: dispatchResult.provider,
           recipientEmail,
           reminder: reminderRecord,
         });
       }
 
-      return res.status(500).json({ success: false, status: 'FAILED', error: 'Internal server error',
+      return res.status(500).json({
+        success: false,
+        emailSent: false,
+        status: 'FAILED',
+        error: dispatchResult.error || 'Internal server error while dispatching email',
         provider: dispatchResult.provider,
         recipientEmail,
         reminder: reminderRecord,
@@ -216,7 +231,9 @@ export async function handleSendNotification(req: any, res: any) {
 
     return res.status(200).json({
       success: true,
+      emailSent: true,
       status: 'SENT',
+      message: `Renewal email dispatched successfully to ${recipientEmail}`,
       provider: dispatchResult.provider,
       messageId: dispatchResult.messageId,
       recipientEmail,

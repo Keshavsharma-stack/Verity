@@ -5,14 +5,20 @@ import { Button } from '../../components/ui/Button';
 import { documentService } from '../../services/documentService';
 import { contractorService } from '../../services/contractorService';
 import { reminderService } from '../../services/reminderService';
+import { notificationService } from '../../services/notificationService';
 import { evaluateExpiration } from '../../lib/expiration';
-import { Document, Contractor, ExpirationStatusCategory } from '../../types';
+import { Document, Contractor, ExpirationStatusCategory, Reminder } from '../../types';
 import { formatDate } from '../../lib/utils';
-import { AlertCircle, Clock, XCircle, Send, ShieldAlert, CheckCircle2, Filter, Loader2, RefreshCw } from 'lucide-react';
+import { AlertCircle, Clock, XCircle, Send, ShieldAlert, CheckCircle2, Filter, Loader2, RefreshCw, Info } from 'lucide-react';
 import { Link } from 'react-router-dom';
 import { useAuth } from '../../hooks/useAuth';
 
-type ExpirationFilter = 'ALL' | 'EXPIRED' | '7_DAYS' | '15_DAYS' | '30_DAYS' | 'NO_EXPIRATION';
+type ExpirationFilter = 'ALL' | 'EXPIRED' | 'CRITICAL' | 'UPCOMING' | 'ACTIVE' | 'PERMANENT';
+
+interface RenewalNotificationState {
+  type: 'success' | 'info' | 'error';
+  message: string;
+}
 
 export function Expirations() {
   const { user } = useAuth();
@@ -21,7 +27,8 @@ export function Expirations() {
   const [loading, setLoading] = useState(true);
   const [activeFilter, setActiveFilter] = useState<ExpirationFilter>('ALL');
   const [dispatchingDocId, setDispatchingDocId] = useState<string | null>(null);
-  const [dispatchedMap, setDispatchedMap] = useState<Record<string, boolean>>({});
+  const [renewalStatusMap, setRenewalStatusMap] = useState<Record<string, 'SENT' | 'PENDING' | 'SCHEDULED' | 'FAILED'>>({});
+  const [notification, setNotification] = useState<RenewalNotificationState | null>(null);
 
   const loadData = async () => {
     if (!user?.workspaceId) {
@@ -31,13 +38,30 @@ export function Expirations() {
 
     setLoading(true);
 
-    const [docsRes, conRes] = await Promise.all([
+    const [docsRes, conRes, remindersRes] = await Promise.all([
       documentService.listDocuments(user.workspaceId),
       contractorService.listContractors(user.workspaceId),
+      reminderService.listReminders(user.workspaceId),
     ]);
 
     setDocuments(docsRes.data || []);
     setContractors(conRes.data || []);
+
+    // Trigger background expiration sync
+    notificationService.triggerExpirationScan(user.workspaceId).catch(() => {});
+
+    // Hydrate existing renewal requests directly from the database
+    const initialMap: Record<string, 'SENT' | 'PENDING' | 'SCHEDULED' | 'FAILED'> = {};
+    if (remindersRes.data) {
+      for (const rem of remindersRes.data) {
+        if (rem.documentId) {
+          if (rem.checkpoint === 'MANUAL_REQUEST' || rem.status === 'SENT' || rem.status === 'PENDING') {
+            initialMap[rem.documentId] = rem.status === 'SENT' ? 'SENT' : 'PENDING';
+          }
+        }
+      }
+    }
+    setRenewalStatusMap(initialMap);
     setLoading(false);
   };
 
@@ -49,6 +73,8 @@ export function Expirations() {
     if (!user?.workspaceId || !contractor) return;
 
     setDispatchingDocId(doc.id);
+    setNotification(null);
+
     const res = await reminderService.sendManualRenewalRequest(
       user.workspaceId,
       doc.id,
@@ -58,9 +84,24 @@ export function Expirations() {
     setDispatchingDocId(null);
 
     if (res.success) {
-      setDispatchedMap(prev => ({ ...prev, [doc.id]: true }));
+      if (res.emailSent) {
+        setRenewalStatusMap(prev => ({ ...prev, [doc.id]: 'SENT' }));
+        setNotification({
+          type: 'success',
+          message: `Renewal email dispatched successfully to ${res.recipientEmail || contractor.email} for ${doc.name}.`,
+        });
+      } else {
+        setRenewalStatusMap(prev => ({ ...prev, [doc.id]: 'PENDING' }));
+        setNotification({
+          type: 'info',
+          message: `Renewal request recorded in database for ${contractor.companyName} (${doc.name}). Email delivery pending (Email service not configured in server environment).`,
+        });
+      }
     } else {
-      alert(res.error || 'Failed to dispatch renewal reminder');
+      setNotification({
+        type: 'error',
+        message: res.error || 'Failed to dispatch renewal request.',
+      });
     }
   };
 
@@ -81,8 +122,10 @@ export function Expirations() {
   }));
 
   const expiredCount = evaluatedDocs.filter(d => d.exp.isExpired).length;
-  const expiring7Count = evaluatedDocs.filter(d => !d.exp.isExpired && d.exp.daysRemaining !== null && d.exp.daysRemaining <= 7).length;
-  const expiring30Count = evaluatedDocs.filter(d => !d.exp.isExpired && d.exp.daysRemaining !== null && d.exp.daysRemaining <= 30).length;
+  const criticalCount = evaluatedDocs.filter(d => !d.exp.isExpired && d.exp.daysRemaining !== null && d.exp.daysRemaining <= 7).length;
+  const upcomingCount = evaluatedDocs.filter(d => !d.exp.isExpired && d.exp.daysRemaining !== null && d.exp.daysRemaining <= 30).length;
+  const activeCount = evaluatedDocs.filter(d => !d.exp.isExpired && d.exp.daysRemaining !== null && d.exp.daysRemaining > 30).length;
+  const permanentCount = evaluatedDocs.filter(d => d.exp.category === 'NO_EXPIRATION_DATE').length;
 
   const filteredItems = evaluatedDocs.filter(item => {
     if (activeFilter === 'ALL') {
@@ -91,16 +134,16 @@ export function Expirations() {
     if (activeFilter === 'EXPIRED') {
       return item.exp.isExpired;
     }
-    if (activeFilter === '7_DAYS') {
+    if (activeFilter === 'CRITICAL') {
       return !item.exp.isExpired && item.exp.daysRemaining !== null && item.exp.daysRemaining <= 7;
     }
-    if (activeFilter === '15_DAYS') {
-      return !item.exp.isExpired && item.exp.daysRemaining !== null && item.exp.daysRemaining <= 15;
-    }
-    if (activeFilter === '30_DAYS') {
+    if (activeFilter === 'UPCOMING') {
       return !item.exp.isExpired && item.exp.daysRemaining !== null && item.exp.daysRemaining <= 30;
     }
-    if (activeFilter === 'NO_EXPIRATION') {
+    if (activeFilter === 'ACTIVE') {
+      return !item.exp.isExpired && item.exp.daysRemaining !== null && item.exp.daysRemaining > 30;
+    }
+    if (activeFilter === 'PERMANENT') {
       return item.exp.category === 'NO_EXPIRATION_DATE';
     }
     return true;
@@ -124,6 +167,36 @@ export function Expirations() {
           <RefreshCw className="w-3.5 h-3.5 mr-1.5" /> Refresh Radar
         </Button>
       </div>
+
+      {/* Real-time Notification Banner */}
+      {notification && (
+        <div 
+          className={`p-4 rounded-xl border flex items-start gap-3 transition-all ${
+            notification.type === 'success'
+              ? 'bg-emerald-950/40 border-emerald-800/80 text-emerald-300'
+              : notification.type === 'info'
+              ? 'bg-amber-950/40 border-amber-800/80 text-amber-300'
+              : 'bg-red-950/40 border-red-800/80 text-red-300'
+          }`}
+        >
+          {notification.type === 'success' ? (
+            <CheckCircle2 className="w-5 h-5 text-emerald-400 shrink-0 mt-0.5" />
+          ) : notification.type === 'info' ? (
+            <Info className="w-5 h-5 text-amber-400 shrink-0 mt-0.5" />
+          ) : (
+            <AlertCircle className="w-5 h-5 text-red-400 shrink-0 mt-0.5" />
+          )}
+          <div className="flex-1 text-xs font-medium leading-relaxed">
+            {notification.message}
+          </div>
+          <button 
+            onClick={() => setNotification(null)}
+            className="text-zinc-400 hover:text-zinc-200 text-xs font-bold ml-2"
+          >
+            ✕
+          </button>
+        </div>
+      )}
 
       {/* Metric Cards */}
       <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
@@ -151,7 +224,7 @@ export function Expirations() {
               </div>
               <div>
                 <p className="text-[11px] font-bold uppercase tracking-wider text-amber-300">Critical Expirations (&le; 7 Days)</p>
-                <p className="text-3xl font-extrabold text-amber-400 mt-0.5">{expiring7Count}</p>
+                <p className="text-3xl font-extrabold text-amber-400 mt-0.5">{criticalCount}</p>
               </div>
             </div>
           </CardContent>
@@ -166,7 +239,7 @@ export function Expirations() {
               </div>
               <div>
                 <p className="text-[11px] font-bold uppercase tracking-wider text-zinc-400">Upcoming Expirations (&le; 30 Days)</p>
-                <p className="text-3xl font-extrabold text-white mt-0.5">{expiring30Count}</p>
+                <p className="text-3xl font-extrabold text-white mt-0.5">{upcomingCount}</p>
               </div>
             </div>
           </CardContent>
@@ -198,22 +271,28 @@ export function Expirations() {
               Expired ({expiredCount})
             </button>
             <button
-              onClick={() => setActiveFilter('7_DAYS')}
-              className={`px-2.5 py-1 text-[11px] font-semibold rounded-md transition-colors ${activeFilter === '7_DAYS' ? 'bg-amber-950 text-amber-300 border border-amber-800/60' : 'text-zinc-400 hover:text-zinc-200'}`}
+              onClick={() => setActiveFilter('CRITICAL')}
+              className={`px-2.5 py-1 text-[11px] font-semibold rounded-md transition-colors ${activeFilter === 'CRITICAL' ? 'bg-amber-950 text-amber-300 border border-amber-800/60' : 'text-zinc-400 hover:text-zinc-200'}`}
             >
-              &le; 7 Days ({expiring7Count})
+              Critical &le; 7d ({criticalCount})
             </button>
             <button
-              onClick={() => setActiveFilter('30_DAYS')}
-              className={`px-2.5 py-1 text-[11px] font-semibold rounded-md transition-colors ${activeFilter === '30_DAYS' ? 'bg-zinc-800 text-white' : 'text-zinc-400 hover:text-zinc-200'}`}
+              onClick={() => setActiveFilter('UPCOMING')}
+              className={`px-2.5 py-1 text-[11px] font-semibold rounded-md transition-colors ${activeFilter === 'UPCOMING' ? 'bg-zinc-800 text-white' : 'text-zinc-400 hover:text-zinc-200'}`}
             >
-              &le; 30 Days ({expiring30Count})
+              Upcoming &le; 30d ({upcomingCount})
             </button>
             <button
-              onClick={() => setActiveFilter('NO_EXPIRATION')}
-              className={`px-2.5 py-1 text-[11px] font-semibold rounded-md transition-colors ${activeFilter === 'NO_EXPIRATION' ? 'bg-zinc-800 text-white' : 'text-zinc-400 hover:text-zinc-200'}`}
+              onClick={() => setActiveFilter('ACTIVE')}
+              className={`px-2.5 py-1 text-[11px] font-semibold rounded-md transition-colors ${activeFilter === 'ACTIVE' ? 'bg-emerald-950 text-emerald-300 border border-emerald-800/60' : 'text-zinc-400 hover:text-zinc-200'}`}
             >
-              Permanent
+              Active &gt; 30d ({activeCount})
+            </button>
+            <button
+              onClick={() => setActiveFilter('PERMANENT')}
+              className={`px-2.5 py-1 text-[11px] font-semibold rounded-md transition-colors ${activeFilter === 'PERMANENT' ? 'bg-zinc-800 text-white' : 'text-zinc-400 hover:text-zinc-200'}`}
+            >
+              Permanent ({permanentCount})
             </button>
           </div>
         </div>
@@ -226,7 +305,7 @@ export function Expirations() {
                 <th className="p-4">Contractor</th>
                 <th className="p-4">Expiration Date</th>
                 <th className="p-4">Status & Radar Urgency</th>
-                <th className="p-4 text-right">Reminder Action</th>
+                <th className="p-4 text-right">Renewal Action</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-zinc-800/60 text-xs">
@@ -236,16 +315,21 @@ export function Expirations() {
                     <CheckCircle2 className="w-6 h-6 mx-auto mb-2 text-emerald-500" />
                     {activeFilter === 'EXPIRED' 
                       ? 'No expired policies in your workspace.'
-                      : activeFilter === '7_DAYS'
+                      : activeFilter === 'CRITICAL'
                       ? 'No policies expiring within the next 7 days.'
-                      : activeFilter === '30_DAYS'
+                      : activeFilter === 'UPCOMING'
                       ? 'No policies expiring within the next 30 days.'
+                      : activeFilter === 'ACTIVE'
+                      ? 'No active policies beyond 30 days.'
                       : 'All contractor documents in your workspace are active and up to date.'}
                   </td>
                 </tr>
               ) : (
                 filteredItems.map(({ doc, contractor, exp }) => {
-                  const isSent = dispatchedMap[doc.id];
+                  const status = renewalStatusMap[doc.id];
+                  const isSent = status === 'SENT';
+                  const isPending = status === 'PENDING';
+                  const isRequested = isSent || isPending;
                   const isDispatching = dispatchingDocId === doc.id;
 
                   return (
@@ -271,30 +355,41 @@ export function Expirations() {
                           variant={exp.badgeVariant} 
                           className="text-[10px] px-2.5 py-0.5 font-bold uppercase tracking-wider"
                         >
-                          {exp.category === 'EXPIRING_7_DAYS' ? 'EXPIRING (<7d)' :
-                           exp.category === 'EXPIRING_15_DAYS' ? 'EXPIRING (<15d)' :
-                           exp.category === 'EXPIRING_30_DAYS' ? 'EXPIRING (<30d)' :
-                           exp.displayStatus}
+                          {exp.category === 'EXPIRED' ? 'LAPSED / EXPIRED' :
+                           exp.category === 'EXPIRING_7_DAYS' ? 'CRITICAL (≤7d)' :
+                           (exp.category === 'EXPIRING_15_DAYS' || exp.category === 'EXPIRING_30_DAYS') ? 'UPCOMING (≤30d)' :
+                           exp.category === 'ACTIVE' ? 'ACTIVE (>30d)' :
+                           'PERMANENT'}
                         </Badge>
                       </td>
                       <td className="p-4 text-right">
                         <Button 
                           variant="outline" 
                           size="sm" 
-                          className="hover:border-red-500/60 hover:text-white"
-                          disabled={isSent || isDispatching}
+                          className={`transition-colors ${
+                            isSent 
+                              ? 'border-emerald-800/80 bg-emerald-950/30 text-emerald-400 hover:bg-emerald-950/40' 
+                              : isPending
+                              ? 'border-amber-800/80 bg-amber-950/30 text-amber-300 hover:bg-amber-950/40'
+                              : 'hover:border-red-500/60 hover:text-white'
+                          }`}
+                          disabled={isRequested || isDispatching}
                           onClick={() => handleRequestRenewal(doc, contractor)}
                         >
                           {isDispatching ? (
-                            <span className="flex items-center gap-1">
-                              <Loader2 className="w-3 h-3 animate-spin" /> Dispatching...
+                            <span className="flex items-center gap-1.5">
+                              <Loader2 className="w-3 h-3 animate-spin" /> Recording...
                             </span>
                           ) : isSent ? (
-                            <span className="flex items-center gap-1 text-emerald-400">
-                              <CheckCircle2 className="w-3 h-3 text-emerald-400" /> Dispatched
+                            <span className="flex items-center gap-1.5">
+                              <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" /> Email Dispatched
+                            </span>
+                          ) : isPending ? (
+                            <span className="flex items-center gap-1.5">
+                              <Clock className="w-3.5 h-3.5 text-amber-400" /> Renewal Requested
                             </span>
                           ) : (
-                            <span className="flex items-center gap-1">
+                            <span className="flex items-center gap-1.5">
                               <Send className="w-3 h-3 text-red-500" /> Request Renewal
                             </span>
                           )}

@@ -5,6 +5,7 @@ import { Button } from '../../components/ui/Button';
 import { Input, Label } from '../../components/ui/Input';
 import { ArrowLeft, Loader2, Check, AlertCircle } from 'lucide-react';
 import { contractorService } from '../../services/contractorService';
+import { authService } from '../../services/authService';
 import { Contractor, ComplianceStatus } from '../../types';
 import { useAuth } from '../../hooks/useAuth';
 
@@ -87,7 +88,15 @@ export function EditContractor() {
     e.preventDefault();
     setErrorMessage(null);
 
-    if (!user?.workspaceId || !id) {
+    let activeWorkspaceId = user?.workspaceId;
+    if (!activeWorkspaceId) {
+      const { user: freshUser } = await authService.getSession();
+      if (freshUser?.workspaceId) {
+        activeWorkspaceId = freshUser.workspaceId;
+      }
+    }
+
+    if (!activeWorkspaceId || !id) {
       setErrorMessage('Active workspace or contractor ID missing.');
       return;
     }
@@ -115,7 +124,7 @@ export function EditContractor() {
     setSaving(true);
     setSaved(false);
 
-    const res = await contractorService.updateContractor(user.workspaceId, id, {
+    const res = await contractorService.updateContractor(activeWorkspaceId, id, {
       companyName: companyName.trim(),
       trade: trade.trim(),
       primaryContact: contactName.trim(),

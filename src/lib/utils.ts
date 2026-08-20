@@ -21,3 +21,20 @@ export function getDaysRemaining(dateString: string) {
   const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
   return diffDays;
 }
+
+export function normalizeEntityName(name?: string | null): string {
+  if (!name) return '';
+  return name
+    .toLowerCase()
+    .replace(/\b(llc|inc|corp|co|incorporated|company|ltd|limited|d\/b\/a|dba|enterprises|group|services|contracting|construction)\b/gi, '')
+    .replace(/[^a-z0-9]/g, '')
+    .trim();
+}
+
+export function checkEntityMatch(extractedName?: string | null, expectedName?: string | null): boolean {
+  if (!extractedName || !expectedName) return false;
+  const normExtracted = normalizeEntityName(extractedName);
+  const normExpected = normalizeEntityName(expectedName);
+  if (!normExtracted || !normExpected) return false;
+  return normExtracted === normExpected || normExtracted.includes(normExpected) || normExpected.includes(normExtracted);
+}

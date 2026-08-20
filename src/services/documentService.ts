@@ -168,33 +168,35 @@ export const documentService = {
       // 1. Upload to Supabase Storage if File is provided
       if (input.file) {
         calculatedSize = input.file.size;
-        const sanitizedName = input.name.replace(/[^a-zA-Z0-9.-]/g, '_');
-        const storagePath = `workspace/${workspaceId}/contractors/${input.contractorId}/${Date.now()}_${sanitizedName}`;
+        const rawFileName = input.file instanceof File ? input.file.name : input.name;
+        const fileExt = rawFileName.includes('.') ? rawFileName.substring(rawFileName.lastIndexOf('.')) : '.pdf';
+        const sanitizedBaseName = input.name.replace(/[^a-zA-Z0-9_-]/g, '_');
+        const storagePath = `workspace/${workspaceId}/contractors/${input.contractorId}/${Date.now()}_${sanitizedBaseName}${fileExt}`;
+        const fileContentType = (input.file instanceof File && input.file.type) ? input.file.type : 'application/pdf';
 
         try {
           const { error: storageError } = await supabase.storage
             .from('documents')
             .upload(storagePath, input.file, {
               cacheControl: '3600',
+              contentType: fileContentType,
               upsert: true,
             });
 
           if (!storageError) {
             finalFileUrl = storagePath;
           } else {
-            finalFileUrl = storagePath;
+            console.warn('[documentService] Storage upload warning:', storageError);
+            finalFileUrl = '';
           }
-        } catch {
-          finalFileUrl = storagePath;
+        } catch (err) {
+          console.error('[documentService] Storage upload exception:', err);
+          finalFileUrl = '';
         }
       }
 
-      if (!finalFileUrl) {
-        finalFileUrl = `workspace/${workspaceId}/contractors/${input.contractorId}/doc_${Date.now()}`;
-      }
-
       // Initial status determination based on centralized expiration
-      let docStatus = input.status || 'VALID';
+      let docStatus = input.status || 'PENDING_REVIEW';
       if (input.expiresAt) {
         const exp = evaluateExpiration(input.expiresAt);
         if (exp.isExpired) {
@@ -215,6 +217,7 @@ export const documentService = {
           file_url: finalFileUrl,
           file_size: calculatedSize,
           status: docStatus,
+          processing_status: 'UPLOADED',
           expires_at: input.expiresAt || null,
         })
         .select()
@@ -246,6 +249,16 @@ export const documentService = {
 
       // 5. Auto-synchronize contractor compliance status
       await complianceService.syncContractorStatus(workspaceId, input.contractorId);
+
+      // 6. Automatically trigger AI Document OCR Intelligence in background
+      try {
+        const { aiDocumentService } = await import('./aiDocumentService');
+        aiDocumentService.processDocumentExtraction(workspaceId, input.contractorId, doc.id).catch(err => {
+          console.error('[documentService] Background AI OCR extraction failed:', err);
+        });
+      } catch (aiErr) {
+        console.error('[documentService] Failed to trigger AI extraction:', aiErr);
+      }
 
       return { data: doc };
     } catch (err: any) {

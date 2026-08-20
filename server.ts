@@ -12,6 +12,13 @@ import {
   handleProcessQueue,
 } from './src/server/reminderLogic';
 import {
+  handleGetNotifications,
+  handleScanNotifications,
+  handleUpdateNotificationRead,
+  handleMarkAllNotificationsRead,
+  handleCronProcessExpirations,
+} from './src/server/notificationLogic';
+import {
   handleCheckout,
   handlePortal,
   handleStripeWebhook,
@@ -84,6 +91,32 @@ app.post('/api/billing/checkout', async (req, res) => {
 
 app.post('/api/billing/portal', async (req, res) => {
   return handlePortal(req, res);
+});
+
+// -----------------------------------------------------------------------------
+// NOTIFICATIONS API (Expiration Radar Alerts & Persistence)
+// -----------------------------------------------------------------------------
+app.get('/api/notifications', async (req, res) => {
+  return handleGetNotifications(req, res);
+});
+
+app.post('/api/notifications/scan', async (req, res) => {
+  return handleScanNotifications(req, res);
+});
+
+app.patch('/api/notifications/:id/read', async (req, res) => {
+  return handleUpdateNotificationRead(req, res);
+});
+
+app.post('/api/notifications/mark-all-read', async (req, res) => {
+  return handleMarkAllNotificationsRead(req, res);
+});
+
+// -----------------------------------------------------------------------------
+// CRON API (Scheduled Expiration Processing)
+// -----------------------------------------------------------------------------
+app.post('/api/cron/process-expirations', async (req, res) => {
+  return handleCronProcessExpirations(req, res);
 });
 
 // -----------------------------------------------------------------------------

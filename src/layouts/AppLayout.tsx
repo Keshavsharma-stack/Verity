@@ -9,13 +9,13 @@ import {
   Settings, 
   Menu, 
   X, 
-  Bell, 
   Search,
   LogOut,
   Sparkles
 } from 'lucide-react';
 import { cn } from '../lib/utils';
 import { useAuth } from '../hooks/useAuth';
+import { NotificationBellDropdown } from '../components/NotificationBellDropdown';
 
 export function AppLayout() {
   const [sidebarOpen, setSidebarOpen] = useState(false);
@@ -165,10 +165,7 @@ export function AppLayout() {
                 className="block w-full pl-9 pr-3 py-1.5 border border-zinc-800 rounded-lg bg-[#0d0d12] text-zinc-200 placeholder-zinc-500 focus:outline-none focus:border-red-500/60 focus:ring-1 focus:ring-red-500/50 sm:text-xs transition-all"
               />
             </div>
-            <button className="relative p-2 text-zinc-400 hover:text-white hover:bg-zinc-900 rounded-lg transition-colors border border-transparent hover:border-zinc-800">
-              <Bell className="h-4.5 w-4.5" />
-              <span className="absolute top-1.5 right-1.5 block h-2 w-2 rounded-full bg-red-500 ring-2 ring-black" />
-            </button>
+            <NotificationBellDropdown />
           </div>
         </header>
 

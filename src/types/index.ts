@@ -278,3 +278,51 @@ export interface Reminder {
   attemptCount?: number;
   createdAt: string;
 }
+
+export type NotificationUrgency = 'CRITICAL' | 'WARNING' | 'INFO' | 'LOW';
+
+export type NotificationCheckpoint = 
+  | '30_DAYS'
+  | '15_DAYS'
+  | '7_DAYS'
+  | '1_DAY'
+  | 'EXPIRATION_DAY'
+  | 'EXPIRED'
+  | 'MANUAL_REQUEST'
+  | 'COMPLIANCE_ALERT';
+
+export type NotificationType = 
+  | 'EXPIRATION_30_DAYS'
+  | 'EXPIRATION_15_DAYS'
+  | 'EXPIRATION_7_DAYS'
+  | 'EXPIRATION_1_DAY'
+  | 'EXPIRATION_TODAY'
+  | 'EXPIRATION_EXPIRED'
+  | 'RENEWAL_REQUEST'
+  | 'COMPLIANCE_ALERT';
+
+export type NotificationEmailStatus = 'SENT' | 'PENDING' | 'NOT_CONFIGURED' | 'FAILED' | 'NONE';
+
+export interface AppNotification {
+  id: string;
+  workspaceId: string;
+  contractorId?: string;
+  documentId?: string;
+  type: NotificationType;
+  checkpoint: NotificationCheckpoint;
+  title: string;
+  message: string;
+  urgency: NotificationUrgency;
+  documentName: string;
+  contractorName: string;
+  expirationDate?: string;
+  daysRemaining?: number | null;
+  actionUrl?: string;
+  read: boolean;
+  readAt?: string;
+  emailStatus: NotificationEmailStatus;
+  emailSentAt?: string;
+  emailError?: string;
+  metadata?: Record<string, any>;
+  createdAt: string;
+}

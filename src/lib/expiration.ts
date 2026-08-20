@@ -1,11 +1,16 @@
 import { ExpirationStatusCategory } from '../types';
 
+export type ExpirationClassification = 'EXPIRED' | 'CRITICAL' | 'UPCOMING' | 'ACTIVE' | 'PERMANENT';
+
 export interface ExpirationEvaluation {
   category: ExpirationStatusCategory;
+  classification: ExpirationClassification;
   daysRemaining: number | null;
   isExpired: boolean;
+  isCritical: boolean;
+  isUpcoming: boolean;
   isExpiringSoon: boolean;
-  displayStatus: 'ACTIVE' | 'EXPIRING' | 'EXPIRED' | 'NO_EXPIRATION_DATE';
+  displayStatus: 'ACTIVE' | 'EXPIRING' | 'EXPIRED' | 'CRITICAL' | 'UPCOMING' | 'LAPSED' | 'PERMANENT' | 'NO_EXPIRATION_DATE';
   badgeVariant: 'success' | 'warning' | 'danger' | 'neutral';
   humanReadable: string;
 }
@@ -57,10 +62,13 @@ export function evaluateExpiration(expiresAt?: string | null, referenceDate?: Da
   if (days === null) {
     return {
       category: 'NO_EXPIRATION_DATE',
+      classification: 'PERMANENT',
       daysRemaining: null,
       isExpired: false,
+      isCritical: false,
+      isUpcoming: false,
       isExpiringSoon: false,
-      displayStatus: 'NO_EXPIRATION_DATE',
+      displayStatus: 'PERMANENT',
       badgeVariant: 'neutral',
       humanReadable: 'Permanent Record',
     };
@@ -70,8 +78,11 @@ export function evaluateExpiration(expiresAt?: string | null, referenceDate?: Da
     const absDays = Math.abs(days);
     return {
       category: 'EXPIRED',
+      classification: 'EXPIRED',
       daysRemaining: days,
       isExpired: true,
+      isCritical: false,
+      isUpcoming: false,
       isExpiringSoon: false,
       displayStatus: 'EXPIRED',
       badgeVariant: 'danger',
@@ -82,10 +93,13 @@ export function evaluateExpiration(expiresAt?: string | null, referenceDate?: Da
   if (days === 0) {
     return {
       category: 'EXPIRING_7_DAYS',
+      classification: 'CRITICAL',
       daysRemaining: 0,
       isExpired: false,
+      isCritical: true,
+      isUpcoming: true,
       isExpiringSoon: true,
-      displayStatus: 'EXPIRING',
+      displayStatus: 'CRITICAL',
       badgeVariant: 'danger',
       humanReadable: 'Expires today',
     };
@@ -94,11 +108,14 @@ export function evaluateExpiration(expiresAt?: string | null, referenceDate?: Da
   if (days <= 7) {
     return {
       category: 'EXPIRING_7_DAYS',
+      classification: 'CRITICAL',
       daysRemaining: days,
       isExpired: false,
+      isCritical: true,
+      isUpcoming: true,
       isExpiringSoon: true,
-      displayStatus: 'EXPIRING',
-      badgeVariant: 'warning',
+      displayStatus: 'CRITICAL',
+      badgeVariant: 'danger',
       humanReadable: days === 1 ? '1 day remaining' : `${days} days remaining`,
     };
   }
@@ -106,10 +123,13 @@ export function evaluateExpiration(expiresAt?: string | null, referenceDate?: Da
   if (days <= 15) {
     return {
       category: 'EXPIRING_15_DAYS',
+      classification: 'UPCOMING',
       daysRemaining: days,
       isExpired: false,
+      isCritical: false,
+      isUpcoming: true,
       isExpiringSoon: true,
-      displayStatus: 'EXPIRING',
+      displayStatus: 'UPCOMING',
       badgeVariant: 'warning',
       humanReadable: `${days} days remaining`,
     };
@@ -118,10 +138,13 @@ export function evaluateExpiration(expiresAt?: string | null, referenceDate?: Da
   if (days <= 30) {
     return {
       category: 'EXPIRING_30_DAYS',
+      classification: 'UPCOMING',
       daysRemaining: days,
       isExpired: false,
+      isCritical: false,
+      isUpcoming: true,
       isExpiringSoon: true,
-      displayStatus: 'EXPIRING',
+      displayStatus: 'UPCOMING',
       badgeVariant: 'warning',
       humanReadable: `${days} days remaining`,
     };
@@ -129,8 +152,11 @@ export function evaluateExpiration(expiresAt?: string | null, referenceDate?: Da
 
   return {
     category: 'ACTIVE',
+    classification: 'ACTIVE',
     daysRemaining: days,
     isExpired: false,
+    isCritical: false,
+    isUpcoming: false,
     isExpiringSoon: false,
     displayStatus: 'ACTIVE',
     badgeVariant: 'success',

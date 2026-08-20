@@ -25,8 +25,9 @@ import {
 import { documentService } from '../../services/documentService';
 import { contractorService } from '../../services/contractorService';
 import { aiDocumentService } from '../../services/aiDocumentService';
+import { authService } from '../../services/authService';
 import { Document, Contractor, DocumentType, DocumentExtraction } from '../../types';
-import { formatDate } from '../../lib/utils';
+import { formatDate, checkEntityMatch } from '../../lib/utils';
 import { useAuth } from '../../hooks/useAuth';
 
 const DOCUMENT_TYPE_LABELS: Record<DocumentType, string> = {
@@ -157,10 +158,20 @@ export function Documents() {
   };
 
   const handleTriggerAI = async (docId: string, contractorId: string) => {
-    if (!user?.workspaceId) return;
+    let activeWsId = user?.workspaceId;
+    if (!activeWsId) {
+      const { user: freshUser } = await authService.getSession();
+      if (freshUser?.workspaceId) {
+        activeWsId = freshUser.workspaceId;
+      }
+    }
+    if (!activeWsId) return;
 
+    // Immediately update UI to show PROCESSING state
     setAnalyzingDocId(docId);
-    const res = await aiDocumentService.processDocumentExtraction(user.workspaceId, contractorId, docId);
+    setDocuments(prev => prev.map(d => d.id === docId ? { ...d, processingStatus: 'PROCESSING' } : d));
+
+    const res = await aiDocumentService.processDocumentExtraction(activeWsId, contractorId, docId);
     setAnalyzingDocId(null);
 
     if (!res.success && res.error) {
@@ -356,9 +367,21 @@ export function Documents() {
                       <td className="p-4 text-zinc-400">{DOCUMENT_TYPE_LABELS[doc.type] || doc.type.replace(/_/g, ' ')}</td>
                       <td className="p-4">
                         {procStatus === 'VERIFIED' && (
-                          <span className="inline-flex items-center gap-1 text-[10px] font-bold text-emerald-400 bg-emerald-950/80 border border-emerald-800/60 px-2 py-0.5 rounded">
-                            <ShieldCheck className="w-3 h-3" /> Verified
-                          </span>
+                          (!doc.verifiedBy || doc.reviewReason?.toLowerCase().includes('auto-verified')) ? (
+                            <span 
+                              className="inline-flex items-center gap-1 text-[10px] font-bold text-emerald-400 bg-emerald-950/80 border border-emerald-800/60 px-2 py-0.5 rounded"
+                              title={doc.reviewReason || 'Auto-verified by compliance engine'}
+                            >
+                              <Sparkles className="w-3 h-3 text-emerald-400" /> Auto-Verified
+                            </span>
+                          ) : (
+                            <span 
+                              className="inline-flex items-center gap-1 text-[10px] font-bold text-teal-400 bg-teal-950/80 border border-teal-800/60 px-2 py-0.5 rounded"
+                              title={doc.reviewReason || 'Verified by compliance officer'}
+                            >
+                              <ShieldCheck className="w-3 h-3 text-teal-400" /> Verified (Manual)
+                            </span>
+                          )
                         )}
                         {procStatus === 'EXTRACTED' && (
                           <span className="inline-flex items-center gap-1 text-[10px] font-bold text-zinc-300 bg-zinc-800 px-2 py-0.5 rounded">
@@ -366,13 +389,24 @@ export function Documents() {
                           </span>
                         )}
                         {procStatus === 'REVIEW_REQUIRED' && (
-                          <span className="inline-flex items-center gap-1 text-[10px] font-bold text-amber-400 bg-amber-950/80 border border-amber-800/60 px-2 py-0.5 rounded">
-                            <AlertCircle className="w-3 h-3" /> Review Req.
+                          <span 
+                            className="inline-flex items-center gap-1 text-[10px] font-bold text-amber-400 bg-amber-950/80 border border-amber-800/60 px-2 py-0.5 rounded"
+                            title={doc.reviewReason || 'Manual review required before approval'}
+                          >
+                            <AlertCircle className="w-3 h-3 text-amber-400" /> Review Req.
+                          </span>
+                        )}
+                        {procStatus === 'PROCESSING' && (
+                          <span className="inline-flex items-center gap-1 text-[10px] font-bold text-blue-400 bg-blue-950/80 border border-blue-800/60 px-2 py-0.5 rounded animate-pulse">
+                            <Loader2 className="w-3 h-3 animate-spin" /> Processing
                           </span>
                         )}
                         {procStatus === 'FAILED' && (
-                          <span className="inline-flex items-center gap-1 text-[10px] font-bold text-red-400 bg-red-950/80 border border-red-800/60 px-2 py-0.5 rounded">
-                            <XCircle className="w-3 h-3" /> Failed
+                          <span 
+                            className="inline-flex items-center gap-1 text-[10px] font-bold text-red-400 bg-red-950/80 border border-red-800/60 px-2 py-0.5 rounded"
+                            title={doc.reviewReason || doc.processingError || 'Processing or validation failed'}
+                          >
+                            <XCircle className="w-3 h-3" /> {doc.status === 'REJECTED' ? 'Rejected' : 'Failed'}
                           </span>
                         )}
                         {procStatus === 'UPLOADED' && (
@@ -480,28 +514,224 @@ export function Documents() {
               {loadingExtraction ? (
                 <div className="p-8 text-center text-xs text-zinc-400">
                   <Loader2 className="w-5 h-5 animate-spin mx-auto mb-2 text-red-500" />
-                  Loading extraction details...
+                  Loading extraction & compliance audit details...
                 </div>
               ) : (
                 <>
-                  <div className={`p-3 rounded-lg border text-xs flex items-start gap-2.5 ${
-                    inspectingDoc.processingStatus === 'VERIFIED' ? 'bg-emerald-950/40 border-emerald-800/60 text-emerald-300' :
-                    inspectingDoc.processingStatus === 'REVIEW_REQUIRED' ? 'bg-amber-950/40 border-amber-800/60 text-amber-300' :
-                    inspectingDoc.processingStatus === 'FAILED' ? 'bg-red-950/40 border-red-800/60 text-red-300' :
-                    'bg-zinc-900 border-zinc-800 text-zinc-300'
+                  {/* Two-Tier Verification Decision Banner */}
+                  <div className={`p-4 rounded-xl border text-xs ${
+                    inspectingDoc.processingStatus === 'VERIFIED' ? 'bg-emerald-950/30 border-emerald-800/60 text-emerald-300' :
+                    inspectingDoc.processingStatus === 'REVIEW_REQUIRED' ? 'bg-amber-950/30 border-amber-800/60 text-amber-300' :
+                    inspectingDoc.processingStatus === 'FAILED' ? 'bg-red-950/30 border-red-800/60 text-red-300' :
+                    'bg-zinc-900/60 border-zinc-800 text-zinc-300'
                   }`}>
-                    <Info className="w-4 h-4 shrink-0 mt-0.5" />
-                    <div>
-                      <p className="font-bold">Status: {inspectingDoc.processingStatus || 'UPLOADED'}</p>
-                      {inspectingDoc.reviewReason && (
-                        <p className="mt-1 text-[11px]">{inspectingDoc.reviewReason}</p>
-                      )}
-                      {inspectingDoc.processingError && (
-                        <p className="mt-1 text-[11px] text-red-300">{inspectingDoc.processingError}</p>
-                      )}
+                    <div className="flex items-start justify-between gap-3">
+                      <div className="flex items-start gap-2.5">
+                        {inspectingDoc.processingStatus === 'VERIFIED' ? (
+                          <Sparkles className="w-4 h-4 text-emerald-400 shrink-0 mt-0.5" />
+                        ) : inspectingDoc.processingStatus === 'REVIEW_REQUIRED' ? (
+                          <AlertCircle className="w-4 h-4 text-amber-400 shrink-0 mt-0.5" />
+                        ) : inspectingDoc.processingStatus === 'FAILED' ? (
+                          <XCircle className="w-4 h-4 text-red-400 shrink-0 mt-0.5" />
+                        ) : (
+                          <Info className="w-4 h-4 text-zinc-400 shrink-0 mt-0.5" />
+                        )}
+                        <div>
+                          <div className="flex items-center gap-2">
+                            <span className="font-bold uppercase tracking-wider text-[11px]">
+                              {inspectingDoc.processingStatus === 'VERIFIED' 
+                                ? ((!inspectingDoc.verifiedBy || inspectingDoc.reviewReason?.toLowerCase().includes('auto-verified')) ? 'Auto-Verified Decision' : 'Manual Verified Decision')
+                                : inspectingDoc.processingStatus === 'REVIEW_REQUIRED'
+                                ? 'Manual Verification Required'
+                                : inspectingDoc.processingStatus === 'FAILED'
+                                ? (inspectingDoc.status === 'REJECTED' ? 'Document Rejected' : 'Processing Failed')
+                                : 'Pending OCR Extraction'
+                              }
+                            </span>
+                            <span className="text-[10px] px-1.5 py-0.5 rounded bg-black/40 border border-current opacity-80 font-mono">
+                              Status: {inspectingDoc.status}
+                            </span>
+                          </div>
+                          <p className="mt-1.5 text-xs text-zinc-200 font-medium">
+                            {inspectingDoc.reviewReason || inspectingDoc.processingError || (
+                              inspectingDoc.processingStatus === 'VERIFIED' 
+                                ? 'Document passed all deterministic compliance checks.' 
+                                : 'Human compliance inspection required.'
+                            )}
+                          </p>
+                        </div>
+                      </div>
                     </div>
                   </div>
 
+                  {/* Deterministic Validation Rules & Check Breakdown */}
+                  {inspectingExtraction?.evidenceData && (() => {
+                    const con = contractors.find(c => c.id === inspectingDoc.contractorId);
+                    const evidenceData = inspectingExtraction.evidenceData as any;
+                    const validationFailures: string[] = evidenceData?.validationFailures || [];
+                    const validationSuccesses: string[] = evidenceData?.validationSuccesses || [];
+
+                    const contractorLegalName = con?.companyName || evidenceData?.entityMatch?.expected || 'Contractor';
+                    const extractedEntityName = inspectingDoc.extractedData?.entityName?.value || inspectingExtraction.rawExtractedJson?.entityName?.value || null;
+
+                    // Authoritative Entity Match logic
+                    const hasEntityMismatchFailure = validationFailures.some((f: string) => /entity.*mismatch|no verifiable contractor entity/i.test(f));
+                    const hasEntityMatchSuccess = validationSuccesses.some((s: string) => /entity matched/i.test(s));
+                    const isEntityMatched = evidenceData?.entityMatch?.matched !== undefined
+                      ? Boolean(evidenceData.entityMatch.matched)
+                      : (hasEntityMatchSuccess ? true : (hasEntityMismatchFailure ? false : checkEntityMatch(extractedEntityName, contractorLegalName)));
+
+                    // Authoritative Category Match logic
+                    const detectedType = inspectingExtraction?.documentTypeDetected || inspectingDoc.extractedData?.documentType?.value || inspectingDoc.type;
+                    const hasCategoryMismatchFailure = validationFailures.some((f: string) => /category mismatch/i.test(f));
+                    const hasCategoryMatchSuccess = validationSuccesses.some((s: string) => /category verified/i.test(s));
+                    const isCategoryMatched = evidenceData?.categoryMatch?.matched !== undefined
+                      ? Boolean(evidenceData.categoryMatch.matched)
+                      : (hasCategoryMatchSuccess ? true : !hasCategoryMismatchFailure);
+
+                    // Authoritative Expiration Check logic
+                    const isW9orTax = inspectingDoc.type === 'W9' || inspectingDoc.type === 'TAX_DOCUMENT' || inspectingDoc.type === 'SAFETY_CERTIFICATE';
+                    const expDateStr = inspectingDoc.expiresAt || inspectingDoc.extractedData?.expirationDate?.value;
+                    const hasExpiredFailure = validationFailures.some((f: string) => /expired on/i.test(f));
+                    const isExpired = inspectingDoc.status === 'EXPIRED' || hasExpiredFailure || Boolean(expDateStr && new Date(expDateStr).getTime() < Date.now());
+                    const isMissingExp = !expDateStr && !isW9orTax;
+
+                    // Authoritative Policy / ID check logic
+                    const policyNum = inspectingDoc.extractedData?.policyNumber?.value || inspectingDoc.extractedData?.documentNumber?.value || inspectingDoc.extractedData?.licenseNumber?.value;
+                    const hasMissingIdFailure = validationFailures.some((f: string) => /missing policy number|missing state\/trade license/i.test(f));
+                    const isIdRequired = ['GENERAL_LIABILITY', 'CERTIFICATE_OF_INSURANCE', 'WORKERS_COMPENSATION', 'AUTO_INSURANCE', 'BUSINESS_LICENSE', 'PROFESSIONAL_LICENSE'].includes(inspectingDoc.type);
+
+                    return (
+                      <div className="bg-zinc-900/40 border border-zinc-800 rounded-xl p-3.5 space-y-2.5">
+                        <div className="flex items-center justify-between text-xs">
+                          <span className="font-bold uppercase tracking-wider text-[10px] text-zinc-400">Two-Tier Compliance Checks</span>
+                          <span className="text-[10px] text-zinc-400 font-mono">
+                            OCR Confidence: {typeof evidenceData.overallConfidence === 'number' 
+                              ? `${Math.round(evidenceData.overallConfidence * 100)}%` 
+                              : '90%'}
+                          </span>
+                        </div>
+                        
+                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-xs">
+                          {/* Check 1: Document Type Match */}
+                          <div className={`p-2.5 rounded-lg border flex flex-col justify-between ${
+                            isCategoryMatched ? 'bg-black/40 border-zinc-800/80' : 'bg-red-950/20 border-red-900/50'
+                          }`}>
+                            <div className="flex items-center justify-between">
+                              <span className="text-zinc-400">Category Match</span>
+                              {isCategoryMatched ? (
+                                <span className="font-bold text-emerald-400 flex items-center gap-1 text-xs">
+                                  <Check className="w-3 h-3 text-emerald-400" /> Matched
+                                </span>
+                              ) : (
+                                <span className="font-bold text-red-400 flex items-center gap-1 text-xs">
+                                  <XCircle className="w-3 h-3 text-red-400" /> Mismatch
+                                </span>
+                              )}
+                            </div>
+                            <p className="text-[10px] text-zinc-300 mt-1 truncate" title={DOCUMENT_TYPE_LABELS[inspectingDoc.type] || inspectingDoc.type}>
+                              {isCategoryMatched 
+                                ? (DOCUMENT_TYPE_LABELS[inspectingDoc.type] || inspectingDoc.type.replace(/_/g, ' '))
+                                : `Detected: ${detectedType.replace(/_/g, ' ')}`}
+                            </p>
+                          </div>
+
+                          {/* Check 2: Entity Match */}
+                          <div className={`p-2.5 rounded-lg border flex flex-col justify-between ${
+                            !extractedEntityName ? 'bg-amber-950/20 border-amber-900/40' :
+                            !isEntityMatched ? 'bg-red-950/20 border-red-900/50' :
+                            'bg-black/40 border-zinc-800/80'
+                          }`}>
+                            <div className="flex items-center justify-between">
+                              <span className="text-zinc-400">Entity Match</span>
+                              {!extractedEntityName ? (
+                                <span className="font-bold text-amber-400 flex items-center gap-1 text-xs">
+                                  <AlertCircle className="w-3 h-3 text-amber-400" /> Not Detected
+                                </span>
+                              ) : !isEntityMatched ? (
+                                <span className="font-bold text-red-400 flex items-center gap-1 text-xs">
+                                  <XCircle className="w-3 h-3 text-red-400" /> Mismatch
+                                </span>
+                              ) : (
+                                <span className="font-bold text-emerald-400 flex items-center gap-1 text-xs">
+                                  <Check className="w-3 h-3 text-emerald-400" /> Matched
+                                </span>
+                              )}
+                            </div>
+                            
+                            {!extractedEntityName ? (
+                              <p className="text-[10px] text-zinc-400 mt-1">
+                                <span className="text-zinc-500">Expected:</span> <strong className="text-zinc-300">{contractorLegalName}</strong>
+                              </p>
+                            ) : !isEntityMatched ? (
+                              <div className="text-[10px] mt-1 space-y-0.5">
+                                <p className="text-zinc-400 truncate" title={extractedEntityName}><span className="text-zinc-500">Extracted:</span> <strong className="text-red-300">{extractedEntityName}</strong></p>
+                                <p className="text-zinc-400 truncate" title={contractorLegalName}><span className="text-zinc-500">Expected:</span> <strong className="text-zinc-300">{contractorLegalName}</strong></p>
+                              </div>
+                            ) : (
+                              <p className="text-[10px] text-zinc-300 mt-1 truncate" title={extractedEntityName || contractorLegalName}>
+                                {extractedEntityName || contractorLegalName}
+                              </p>
+                            )}
+                          </div>
+
+                          {/* Check 3: Expiration Status */}
+                          <div className={`p-2.5 rounded-lg border flex flex-col justify-between ${
+                            isExpired ? 'bg-red-950/20 border-red-900/50' :
+                            isMissingExp ? 'bg-amber-950/20 border-amber-900/40' :
+                            'bg-black/40 border-zinc-800/80'
+                          }`}>
+                            <div className="flex items-center justify-between">
+                              <span className="text-zinc-400">Expiration</span>
+                              {isExpired ? (
+                                <span className="font-bold text-red-400 flex items-center gap-1 text-xs">
+                                  <XCircle className="w-3 h-3 text-red-400" /> Expired
+                                </span>
+                              ) : isMissingExp ? (
+                                <span className="font-bold text-amber-400 flex items-center gap-1 text-xs">
+                                  <AlertCircle className="w-3 h-3 text-amber-400" /> Missing Date
+                                </span>
+                              ) : (
+                                <span className="font-bold text-emerald-400 flex items-center gap-1 text-xs">
+                                  <Check className="w-3 h-3 text-emerald-400" /> Active
+                                </span>
+                              )}
+                            </div>
+                            <p className="text-[10px] text-zinc-300 mt-1 truncate">
+                              {isExpired 
+                                ? (expDateStr ? `Expired on ${formatDate(expDateStr)}` : 'Document expired')
+                                : isMissingExp 
+                                ? 'Required for active policy'
+                                : (isW9orTax ? 'Permanent Record' : `Expires ${formatDate(expDateStr!)}`)}
+                            </p>
+                          </div>
+
+                          {/* Check 4: Policy / Identifier */}
+                          <div className={`p-2.5 rounded-lg border flex flex-col justify-between ${
+                            (!policyNum && (isIdRequired || hasMissingIdFailure)) ? 'bg-amber-950/20 border-amber-900/40' : 'bg-black/40 border-zinc-800/80'
+                          }`}>
+                            <div className="flex items-center justify-between">
+                              <span className="text-zinc-400">Policy / ID #</span>
+                              {(!policyNum && (isIdRequired || hasMissingIdFailure)) ? (
+                                <span className="font-bold text-amber-400 flex items-center gap-1 text-xs">
+                                  <AlertCircle className="w-3 h-3 text-amber-400" /> Missing #
+                                </span>
+                              ) : (
+                                <span className="font-bold text-emerald-400 flex items-center gap-1 text-xs">
+                                  <Check className="w-3 h-3 text-emerald-400" /> Recorded
+                                </span>
+                              )}
+                            </div>
+                            <p className="text-[10px] text-zinc-300 mt-1 truncate" title={policyNum ? String(policyNum) : (isIdRequired ? 'Required' : 'Compliant')}>
+                              {policyNum ? String(policyNum) : (isIdRequired ? 'Missing required ID #' : 'Compliant')}
+                            </p>
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })()}
+
+                  {/* Extracted Metadata & Evidence Table */}
                   <div>
                     <h4 className="text-xs font-bold uppercase tracking-wider text-zinc-300 mb-2">Extracted Metadata & Evidence</h4>
                     <div className="border border-zinc-800 rounded-lg overflow-hidden bg-black/40">
@@ -541,32 +771,36 @@ export function Documents() {
                     </div>
                   </div>
 
-                  {inspectingExtraction?.requirementChecks && inspectingExtraction.requirementChecks.length > 0 && (
-                    <div>
-                      <h4 className="text-xs font-bold uppercase tracking-wider text-zinc-300 mb-2">Compliance Requirement Matching</h4>
-                      <ul className="space-y-2">
-                        {inspectingExtraction.requirementChecks.map((chk, idx) => (
-                          <li key={idx} className="p-3 bg-zinc-900/80 border border-zinc-800 rounded-lg flex items-center justify-between text-xs">
-                            <div>
-                              <p className="font-bold text-zinc-200">{chk.requirementName}</p>
-                              <p className="text-[11px] text-zinc-400 mt-0.5">
-                                Extracted: <strong className="text-zinc-200">{chk.extractedValue}</strong> {chk.expectedThreshold ? `(Required: ${chk.expectedThreshold})` : ''}
-                              </p>
-                            </div>
-                            <Badge variant={chk.satisfied ? 'success' : 'danger'} className="text-[10px] uppercase font-bold">
-                              {chk.status}
-                            </Badge>
-                          </li>
-                        ))}
-                      </ul>
+                  {/* Immutable Audit Trail */}
+                  <div className="p-3 bg-zinc-900/30 border border-zinc-800/80 rounded-xl space-y-1.5 text-xs">
+                    <h4 className="text-[10px] font-bold uppercase tracking-wider text-zinc-400">Immutable Audit Record</h4>
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-y-1 gap-x-4 text-[11px] text-zinc-400">
+                      <div><strong className="text-zinc-300">Uploaded:</strong> {formatDate(inspectingDoc.uploadedAt)}</div>
+                      <div><strong className="text-zinc-300">File Size:</strong> {(inspectingDoc.fileSize / 1024).toFixed(1)} KB</div>
+                      <div>
+                        <strong className="text-zinc-300">OCR Engine:</strong> {inspectingExtraction?.modelUsed || 'gemini-3.7-flash'}
+                      </div>
+                      <div>
+                        <strong className="text-zinc-300">Decision Mode:</strong> {
+                          inspectingDoc.processingStatus === 'VERIFIED' 
+                            ? ((!inspectingDoc.verifiedBy || inspectingDoc.reviewReason?.toLowerCase().includes('auto-verified')) ? 'Automated (Tier 1)' : 'Manual Officer Review')
+                            : inspectingDoc.processingStatus === 'REVIEW_REQUIRED' ? 'Flagged for Human Review' : 'Pending'
+                        }
+                      </div>
+                      {inspectingDoc.verifiedAt && (
+                        <div><strong className="text-zinc-300">Verified At:</strong> {formatDate(inspectingDoc.verifiedAt)}</div>
+                      )}
+                      {inspectingDoc.verifiedBy && (
+                        <div><strong className="text-zinc-300">Reviewer ID:</strong> {inspectingDoc.verifiedBy}</div>
+                      )}
                     </div>
-                  )}
+                  </div>
 
-                  <div className="pt-3 border-t border-zinc-800 space-y-2">
-                    <Label htmlFor="reviewReason" className="text-xs">Review Notes / Reason (Optional)</Label>
+                  <div className="pt-2 border-t border-zinc-800 space-y-1.5">
+                    <Label htmlFor="reviewReason" className="text-xs font-semibold text-zinc-300">Review Notes / Compliance Reason</Label>
                     <Input 
                       id="reviewReason"
-                      placeholder="Add compliance notes or reason for approval/flag..."
+                      placeholder="Add compliance notes or reason for approval / rejection / flag..."
                       value={manualReviewReason}
                       onChange={(e) => setManualReviewReason(e.target.value)}
                       className="text-xs"
@@ -576,13 +810,13 @@ export function Documents() {
               )}
             </div>
 
-            <div className="flex flex-wrap items-center justify-between gap-3 p-4 bg-zinc-950/80 border-t border-zinc-800 shrink-0">
+            <div className="flex flex-wrap items-center justify-between gap-2.5 p-4 bg-zinc-950/80 border-t border-zinc-800 shrink-0">
               <Button 
                 variant="outline" 
                 size="sm" 
                 onClick={() => handleViewDocument(inspectingDoc)}
               >
-                <Download className="w-3.5 h-3.5 mr-1.5" /> View Original File
+                <Download className="w-3.5 h-3.5 mr-1.5" /> View File
               </Button>
 
               <div className="flex items-center gap-2">
@@ -590,16 +824,25 @@ export function Documents() {
                   variant="outline" 
                   size="sm"
                   disabled={verificationLoading}
-                  onClick={() => handleManualVerify('REVIEW_REQUIRED')}
-                  className="text-amber-400 border-amber-900/60 hover:bg-amber-950/40"
+                  onClick={() => handleManualVerify('FAILED')}
+                  className="text-red-400 border-red-900/60 hover:bg-red-950/40 text-xs"
                 >
-                  Flag For Review
+                  <XCircle className="w-3.5 h-3.5 mr-1 text-red-400" /> Reject
+                </Button>
+                <Button 
+                  variant="outline" 
+                  size="sm"
+                  disabled={verificationLoading}
+                  onClick={() => handleManualVerify('REVIEW_REQUIRED')}
+                  className="text-amber-400 border-amber-900/60 hover:bg-amber-950/40 text-xs"
+                >
+                  Flag Review
                 </Button>
                 <Button 
                   size="sm"
                   disabled={verificationLoading}
                   onClick={() => handleManualVerify('VERIFIED')}
-                  className="bg-emerald-600 hover:bg-emerald-500 text-white"
+                  className="bg-emerald-600 hover:bg-emerald-500 text-white text-xs"
                 >
                   {verificationLoading ? (
                     <Loader2 className="w-3.5 h-3.5 animate-spin mr-1" />

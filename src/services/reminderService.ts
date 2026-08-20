@@ -187,7 +187,9 @@ export const reminderService = {
     customMessage?: string
   ): Promise<{ 
     success: boolean; 
+    emailSent?: boolean;
     status?: string;
+    message?: string;
     provider?: string; 
     reminder?: Reminder; 
     error?: string;
@@ -198,7 +200,7 @@ export const reminderService = {
     }
 
     if (!isSupabaseConfigured() || !supabase) {
-      return { success: true };
+      return { success: true, emailSent: false, status: 'PENDING', message: 'Renewal request recorded locally' };
     }
 
     try {
@@ -229,7 +231,9 @@ export const reminderService = {
         if (response.ok && resData.success) {
           return {
             success: true,
+            emailSent: Boolean(resData.emailSent),
             status: resData.status,
+            message: resData.message,
             provider: resData.provider,
             recipientEmail: resData.recipientEmail,
             reminder: resData.reminder ? mapReminderFromDB(resData.reminder) : undefined,
@@ -239,7 +243,9 @@ export const reminderService = {
         // Return real server response / configuration required note
         return {
           success: false,
+          emailSent: false,
           status: resData.status || 'FAILED',
+          message: resData.message,
           provider: resData.provider,
           error: resData.error || `Server returned error status ${response.status}`,
           recipientEmail: resData.recipientEmail,

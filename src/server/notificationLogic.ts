@@ -162,6 +162,7 @@ export async function processWorkspaceExpirationScan(
 ): Promise<{
   scannedDocuments: number;
   newNotificationsCount: number;
+  duplicatesSkipped: number;
   emailsAttempted: number;
   emailsSent: number;
   errors: string[];
@@ -169,6 +170,7 @@ export async function processWorkspaceExpirationScan(
   const errors: string[] = [];
   let scannedDocuments = 0;
   let newNotificationsCount = 0;
+  let duplicatesSkipped = 0;
   let emailsAttempted = 0;
   let emailsSent = 0;
 
@@ -182,11 +184,11 @@ export async function processWorkspaceExpirationScan(
 
     if (docsError) {
       errors.push(`Failed to fetch documents: ${docsError.message}`);
-      return { scannedDocuments, newNotificationsCount, emailsAttempted, emailsSent, errors };
+      return { scannedDocuments, newNotificationsCount, duplicatesSkipped, emailsAttempted, emailsSent, errors };
     }
 
     if (!documents || documents.length === 0) {
-      return { scannedDocuments: 0, newNotificationsCount: 0, emailsAttempted: 0, emailsSent: 0, errors };
+      return { scannedDocuments: 0, newNotificationsCount: 0, duplicatesSkipped: 0, emailsAttempted: 0, emailsSent: 0, errors };
     }
 
     scannedDocuments = documents.length;
@@ -239,6 +241,7 @@ export async function processWorkspaceExpirationScan(
 
         // Skip if already generated for this exact document, checkpoint, and expiration cycle
         if (existingKeySet.has(idempotencyKey)) {
+          duplicatesSkipped++;
           continue;
         }
 
@@ -326,7 +329,7 @@ export async function processWorkspaceExpirationScan(
     errors.push(`Workspace scan error: ${err?.message || 'Unknown scan error'}`);
   }
 
-  return { scannedDocuments, newNotificationsCount, emailsAttempted, emailsSent, errors };
+  return { scannedDocuments, newNotificationsCount, duplicatesSkipped, emailsAttempted, emailsSent, errors };
 }
 
 /**
@@ -335,13 +338,14 @@ export async function processWorkspaceExpirationScan(
 export async function runGlobalExpirationScan(referenceDate?: Date): Promise<{
   workspacesProcessed: number;
   totalNewNotifications: number;
+  totalDuplicatesSkipped: number;
   totalEmailsSent: number;
   totalScannedDocuments: number;
 }> {
   const supabase = getSupabaseServerClient();
   if (!supabase) {
     console.warn('[ExpirationScheduler] Supabase server client not configured, skipping scan.');
-    return { workspacesProcessed: 0, totalNewNotifications: 0, totalEmailsSent: 0, totalScannedDocuments: 0 };
+    return { workspacesProcessed: 0, totalNewNotifications: 0, totalDuplicatesSkipped: 0, totalEmailsSent: 0, totalScannedDocuments: 0 };
   }
 
   try {
@@ -351,30 +355,33 @@ export async function runGlobalExpirationScan(referenceDate?: Date): Promise<{
 
     if (error || !workspaces) {
       console.error('[ExpirationScheduler] Failed to fetch workspaces:', error?.message);
-      return { workspacesProcessed: 0, totalNewNotifications: 0, totalEmailsSent: 0, totalScannedDocuments: 0 };
+      return { workspacesProcessed: 0, totalNewNotifications: 0, totalDuplicatesSkipped: 0, totalEmailsSent: 0, totalScannedDocuments: 0 };
     }
 
     let totalNewNotifications = 0;
+    let totalDuplicatesSkipped = 0;
     let totalEmailsSent = 0;
     let totalScannedDocuments = 0;
 
     for (const ws of workspaces) {
       const res = await processWorkspaceExpirationScan(supabase, ws.id, undefined, referenceDate);
       totalNewNotifications += res.newNotificationsCount;
+      totalDuplicatesSkipped += res.duplicatesSkipped;
       totalEmailsSent += res.emailsSent;
       totalScannedDocuments += res.scannedDocuments;
     }
 
-    console.log(`[ExpirationScheduler] Global scan complete: ${workspaces.length} workspaces, ${totalScannedDocuments} documents scanned, ${totalNewNotifications} new notifications, ${totalEmailsSent} emails sent.`);
+    console.log(`[ExpirationScheduler] Global scan complete: ${workspaces.length} workspaces, ${totalScannedDocuments} documents scanned, ${totalNewNotifications} new notifications, ${totalDuplicatesSkipped} duplicates skipped, ${totalEmailsSent} emails sent.`);
     return {
       workspacesProcessed: workspaces.length,
       totalNewNotifications,
+      totalDuplicatesSkipped,
       totalEmailsSent,
       totalScannedDocuments,
     };
   } catch (err: any) {
     console.error('[ExpirationScheduler] Unexpected error during global scan:', err);
-    return { workspacesProcessed: 0, totalNewNotifications: 0, totalEmailsSent: 0, totalScannedDocuments: 0 };
+    return { workspacesProcessed: 0, totalNewNotifications: 0, totalDuplicatesSkipped: 0, totalEmailsSent: 0, totalScannedDocuments: 0 };
   }
 }
 
@@ -409,7 +416,7 @@ export async function handleCronProcessExpirations(req: any, res: any) {
     // using SUPABASE_SERVICE_ROLE_KEY to bypass RLS.
     const result = await runGlobalExpirationScan();
 
-    console.log(`[Cron] Scan details: Documents scanned: ${result.totalScannedDocuments}, Notifications created: ${result.totalNewNotifications}`);
+    console.log(`[Cron] Scan details: Documents scanned: ${result.totalScannedDocuments}, Notifications created: ${result.totalNewNotifications}, Duplicates skipped: ${result.totalDuplicatesSkipped}`);
     console.log('[Cron] Execution completed successfully.');
 
     return res.status(200).json({

@@ -53,10 +53,19 @@ export function Expirations() {
     // Hydrate existing renewal requests directly from the database
     const initialMap: Record<string, 'SENT' | 'PENDING' | 'SCHEDULED' | 'FAILED'> = {};
     if (remindersRes.data) {
+      // First pass: map MANUAL_REQUEST statuses
       for (const rem of remindersRes.data) {
-        if (rem.documentId) {
-          if (rem.checkpoint === 'MANUAL_REQUEST' || rem.status === 'SENT' || rem.status === 'PENDING') {
-            initialMap[rem.documentId] = rem.status === 'SENT' ? 'SENT' : 'PENDING';
+        if (rem.documentId && rem.checkpoint === 'MANUAL_REQUEST') {
+          if (rem.status === 'SENT' || rem.status === 'PENDING') {
+            initialMap[rem.documentId] = rem.status;
+          }
+        }
+      }
+      // Second pass: if no manual request exists but an automated notice was dispatched
+      for (const rem of remindersRes.data) {
+        if (rem.documentId && !initialMap[rem.documentId]) {
+          if (rem.status === 'SENT') {
+            initialMap[rem.documentId] = 'SENT';
           }
         }
       }
@@ -75,33 +84,41 @@ export function Expirations() {
     setDispatchingDocId(doc.id);
     setNotification(null);
 
-    const res = await reminderService.sendManualRenewalRequest(
-      user.workspaceId,
-      doc.id,
-      contractor.id,
-      doc.name
-    );
-    setDispatchingDocId(null);
+    try {
+      const res = await reminderService.sendManualRenewalRequest(
+        user.workspaceId,
+        doc.id,
+        contractor.id,
+        doc.name
+      );
 
-    if (res.success) {
-      if (res.emailSent) {
-        setRenewalStatusMap(prev => ({ ...prev, [doc.id]: 'SENT' }));
-        setNotification({
-          type: 'success',
-          message: `Renewal email dispatched successfully to ${res.recipientEmail || contractor.email} for ${doc.name}.`,
-        });
+      if (res.success) {
+        if (res.emailSent) {
+          setRenewalStatusMap(prev => ({ ...prev, [doc.id]: 'SENT' }));
+          setNotification({
+            type: 'success',
+            message: `Renewal email dispatched successfully to ${res.recipientEmail || contractor.email} for ${doc.name}.`,
+          });
+        } else {
+          setRenewalStatusMap(prev => ({ ...prev, [doc.id]: 'PENDING' }));
+          setNotification({
+            type: 'info',
+            message: `Renewal request recorded in database for ${contractor.companyName} (${doc.name}). Email delivery pending (Email service not configured in server environment).`,
+          });
+        }
       } else {
-        setRenewalStatusMap(prev => ({ ...prev, [doc.id]: 'PENDING' }));
         setNotification({
-          type: 'info',
-          message: `Renewal request recorded in database for ${contractor.companyName} (${doc.name}). Email delivery pending (Email service not configured in server environment).`,
+          type: 'error',
+          message: res.error || 'Failed to dispatch renewal request.',
         });
       }
-    } else {
+    } catch (err: any) {
       setNotification({
         type: 'error',
-        message: res.error || 'Failed to dispatch renewal request.',
+        message: err?.message || 'Unexpected error while processing renewal request.',
       });
+    } finally {
+      setDispatchingDocId(null);
     }
   };
 
@@ -164,55 +181,6 @@ export function Expirations() {
           <p className="text-xs font-medium text-zinc-400 mt-1">Automatic 30/15/7/1-day risk monitoring and automated subcontractor document requests.</p>
         </div>
         <div className="flex gap-2">
-          <Button 
-            variant="outline" 
-            size="sm" 
-            onClick={async () => {
-              try {
-                setLoading(true);
-                const { supabase } = await import('../../lib/supabase');
-                const token = (await supabase?.auth.getSession())?.data.session?.access_token;
-                const res = await fetch('/api/cron/test-e2e', {
-                  method: 'POST',
-                  headers: { Authorization: `Bearer ${token}` }
-                });
-                const data = await res.json();
-                if (data.success) {
-                  setNotification({ type: 'success', message: `Test run successfully! Created test document, generated 1 notification for CRITICAL, idempotency verified. Notifications generated: ${data.notificationsGenerated}` });
-                } else {
-                  setNotification({ type: 'error', message: 'Test failed: ' + data.error });
-                }
-              } catch (e: any) {
-                setNotification({ type: 'error', message: e.message });
-              } finally {
-                loadData();
-              }
-            }}
-            className="border-red-900/50 text-red-400 hover:bg-red-950 hover:text-red-300"
-          >
-            Run E2E Test
-          </Button>
-          <Button 
-            variant="outline" 
-            size="sm" 
-            onClick={async () => {
-              try {
-                const { supabase } = await import('../../lib/supabase');
-                const token = (await supabase?.auth.getSession())?.data.session?.access_token;
-                await fetch('/api/cron/test-e2e?cleanup=true', {
-                  method: 'POST',
-                  headers: { Authorization: `Bearer ${token}` }
-                });
-                setNotification({ type: 'info', message: 'Test data cleaned up.' });
-                loadData();
-              } catch (e: any) {
-                setNotification({ type: 'error', message: e.message });
-              }
-            }}
-            className="border-zinc-800"
-          >
-            Cleanup Test Data
-          </Button>
           <Button variant="outline" size="sm" onClick={loadData}>
             <RefreshCw className="w-3.5 h-3.5 mr-1.5" /> Refresh Radar
           </Button>

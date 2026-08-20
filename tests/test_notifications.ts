@@ -1,23 +1,32 @@
 import { supabase } from '../src/lib/supabase';
 import { reminderService } from '../src/services/reminderService';
+import { createClient } from '@supabase/supabase-js';
 import fetch from 'node-fetch'; // if we want to call our own endpoint
 
 async function runTests() {
   console.log('--- STARTING REMINDER ENGINE TESTS ---');
 
-  // We need to test through the backend context OR directly via Supabase.
-  // We'll log in as a test user, create a workspace, contractor, and documents.
+  const supabaseUrl = process.env.VITE_SUPABASE_URL || process.env.SUPABASE_URL || '';
+  const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY || '';
+
+  if (!supabaseUrl || !serviceRoleKey) {
+    console.error('SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY environment variables are required to run tests.');
+    return;
+  }
+
+  const adminClient = createClient(supabaseUrl, serviceRoleKey, {
+    auth: { persistSession: false }
+  });
 
   const email = `test-notification-${Date.now()}@gmail.com`;
   const password = 'testpassword123';
 
   console.log('1. Signing up test user...');
-  const { data: signUpData, error: signUpError } = await supabase.auth.signUp({
+  const { data: signUpData, error: signUpError } = await adminClient.auth.admin.createUser({
     email,
     password,
-    options: {
-      data: { full_name: 'Notification Tester', company_name: 'Test Corp' }
-    }
+    email_confirm: true,
+    user_metadata: { full_name: 'Notification Tester', company_name: 'Test Corp' }
   });
 
   if (signUpError) {
@@ -28,9 +37,18 @@ async function runTests() {
   // Wait for triggers to create workspace
   await new Promise(r => setTimeout(r, 2000));
 
-  // Get session token to call API
-  const { data: sessionData } = await supabase.auth.getSession();
-  const token = sessionData.session?.access_token;
+  // Sign in with password to get valid session
+  const { data: signInData, error: signInError } = await supabase.auth.signInWithPassword({
+    email,
+    password
+  });
+
+  if (signInError) {
+    console.error('Sign in failed', signInError);
+    return;
+  }
+
+  const token = signInData.session?.access_token;
   
   if (!token) {
     console.error('No session token');

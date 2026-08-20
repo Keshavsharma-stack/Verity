@@ -93,12 +93,14 @@ export const contractorService = {
         return { data: [], error: conError.message };
       }
 
-      const contractors: Contractor[] = (contractorsData || []).map((row: any) => {
-        const reqRow = Array.isArray(row.compliance_requirements)
-          ? row.compliance_requirements[0]
-          : row.compliance_requirements;
-        return mapContractorFromDB(row, reqRow);
-      });
+      const contractors: Contractor[] = (contractorsData || [])
+        .filter((row: any) => !row.company_name?.startsWith('[TEST') && !row.company_name?.startsWith('[E2E'))
+        .map((row: any) => {
+          const reqRow = Array.isArray(row.compliance_requirements)
+            ? row.compliance_requirements[0]
+            : row.compliance_requirements;
+          return mapContractorFromDB(row, reqRow);
+        });
 
       return { data: contractors };
     } catch (err: any) {

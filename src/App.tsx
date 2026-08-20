@@ -27,7 +27,7 @@ import { EditContractor } from './pages/app/EditContractor';
 import { Documents } from './pages/app/Documents';
 import { Expirations } from './pages/app/Expirations';
 import { Compliance } from './pages/app/Compliance';
-import { Settings, SettingsCompany, SettingsTeam, SettingsBilling } from './pages/app/Settings';
+import { Settings, SettingsCompany, SettingsTeam, SettingsBilling, SettingsAdminQA } from './pages/app/Settings';
 
 export default function App() {
   return (
@@ -62,6 +62,8 @@ export default function App() {
                 <Route path="company" element={<SettingsCompany />} />
                 <Route path="team" element={<SettingsTeam />} />
                 <Route path="billing" element={<SettingsBilling />} />
+                <Route path="qa" element={<SettingsAdminQA />} />
+                <Route path="developer" element={<SettingsAdminQA />} />
               </Route>
             </Route>
           </Route>

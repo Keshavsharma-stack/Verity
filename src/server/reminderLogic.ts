@@ -69,7 +69,8 @@ export async function handleSendNotification(req: any, res: any) {
     const supabase = getSupabaseUserClient(authHeader);
 
     // 1. Authenticate user
-    const { data: userData, error: userError } = await supabase.auth.getUser(authHeader.replace("Bearer ", ""));
+    const token = authHeader.replace(/^Bearer\s+/i, '').trim();
+    const { data: userData, error: userError } = await supabase.auth.getUser(token);
     if (userError || !userData?.user) {
       return res.status(401).json({ error: 'Authentication failed' });
     }
@@ -85,6 +86,10 @@ export async function handleSendNotification(req: any, res: any) {
 
     if (memberError || !memberData) {
       return res.status(403).json({ error: 'Forbidden: Access denied to this workspace' });
+    }
+
+    if (memberData.role === 'VIEWER') {
+      return res.status(403).json({ error: 'Forbidden: Write or executive access is denied for VIEWER role.' });
     }
 
     // 3. Verify contractor belongs to this workspace
@@ -154,7 +159,11 @@ export async function handleSendNotification(req: any, res: any) {
     // 8. Update / Upsert into reminders table (Audit & Idempotency)
     let reminderRecord: any = null;
     try {
-      const { data: remData } = await supabase
+      const upsertOptions = documentId 
+        ? { onConflict: 'document_id,checkpoint' } 
+        : undefined;
+
+      const { data: remData, error: remError } = await supabase
         .from('reminders')
         .upsert(
           {
@@ -169,14 +178,18 @@ export async function handleSendNotification(req: any, res: any) {
             error_message: errorMessage || null,
             attempt_count: 1,
           },
-          { onConflict: 'document_id,checkpoint' }
+          upsertOptions
         )
         .select()
         .maybeSingle();
 
-      reminderRecord = remData;
-    } catch {
-      // Table insert fallback if RLS or unique constraint allows
+      if (remError) {
+        console.warn(`[handleSendNotification] reqId=${reqId} Reminder upsert warning:`, remError.message || remError);
+      } else {
+        reminderRecord = remData;
+      }
+    } catch (err: any) {
+      console.warn(`[handleSendNotification] reqId=${reqId} Reminder upsert exception:`, err?.message || err);
     }
 
     // 9. Write audit log entry in activities table
@@ -193,7 +206,7 @@ export async function handleSendNotification(req: any, res: any) {
         ? `Recorded renewal request for ${contractor.company_name} (${document?.name || 'document'}). Email delivery pending (email service not configured).`
         : `Failed to dispatch notification to ${recipientEmail}: ${errorMessage || 'Unknown error'}`;
 
-      await supabase.from('activities').insert({
+      const { error: actError } = await supabase.from('activities').insert({
         workspace_id: workspaceId,
         contractor_id: contractorId,
         document_id: documentId || null,
@@ -201,8 +214,12 @@ export async function handleSendNotification(req: any, res: any) {
         action: actionTitle,
         description: actionDesc,
       });
-    } catch {
-      // Activity insert non-blocking
+
+      if (actError) {
+        console.warn(`[handleSendNotification] reqId=${reqId} Activity insert warning:`, actError.message || actError);
+      }
+    } catch (err: any) {
+      console.warn(`[handleSendNotification] reqId=${reqId} Activity insert exception:`, err?.message || err);
     }
 
     if (!dispatchResult.success) {
@@ -284,6 +301,10 @@ export async function handleProcessQueue(req: any, res: any) {
 
     if (memberError || !memberData) {
       return res.status(403).json({ error: 'Forbidden: Access denied to this workspace' });
+    }
+
+    if (memberData.role === 'VIEWER') {
+      return res.status(403).json({ error: 'Forbidden: Write or executive access is denied for VIEWER role.' });
     }
 
     // 2. Fetch due scheduled reminders (scheduled_for <= now and status in ('SCHEDULED', 'PENDING', 'FAILED'))

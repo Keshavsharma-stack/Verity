@@ -610,7 +610,9 @@ export const complianceService = {
         return { data: resultMap, error: contractorsRes.error.message };
       }
 
-      const contractors = contractorsRes.data || [];
+      const contractors = (contractorsRes.data || []).filter(
+        (c: any) => !c.company_name?.startsWith('[TEST') && !c.company_name?.startsWith('[E2E')
+      );
       const reqsByContractor = new Map<string, ComplianceRequirement>();
       for (const row of reqsRes.data || []) {
         reqsByContractor.set(row.contractor_id, {

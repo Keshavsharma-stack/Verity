@@ -174,6 +174,9 @@ CREATE TABLE IF NOT EXISTS public.subscriptions (
     plan_id UUID REFERENCES public.plans(id),
     status TEXT NOT NULL DEFAULT 'active',
     plan TEXT NOT NULL DEFAULT 'FREE',
+    stripe_subscription_id TEXT,
+    stripe_price_id TEXT,
+    cancel_at_period_end BOOLEAN DEFAULT false,
     current_period_start TIMESTAMP WITH TIME ZONE,
     current_period_end TIMESTAMP WITH TIME ZONE,
     trial_start TIMESTAMP WITH TIME ZONE,
@@ -549,11 +552,17 @@ CREATE POLICY "Anyone can view plan_entitlements" ON public.plan_entitlements FO
 CREATE OR REPLACE FUNCTION enforce_contractor_limit() RETURNS TRIGGER AS $$
 DECLARE
     workspace_plan TEXT;
+    sub_status TEXT;
     contractor_count INT;
     contractor_limit INT;
 BEGIN
-    SELECT plan INTO workspace_plan FROM public.subscriptions WHERE workspace_id = NEW.workspace_id;
+    SELECT plan, status INTO workspace_plan, sub_status FROM public.subscriptions WHERE workspace_id = NEW.workspace_id;
     IF workspace_plan IS NULL THEN
+        workspace_plan := 'FREE';
+    END IF;
+
+    -- If subscription status is not active or trialing, override the plan to FREE
+    IF sub_status IS NOT NULL AND sub_status <> 'active' AND sub_status <> 'trialing' THEN
         workspace_plan := 'FREE';
     END IF;
 
@@ -582,11 +591,17 @@ FOR EACH ROW EXECUTE FUNCTION enforce_contractor_limit();
 CREATE OR REPLACE FUNCTION enforce_document_limit() RETURNS TRIGGER AS $$
 DECLARE
     workspace_plan TEXT;
+    sub_status TEXT;
     document_count INT;
     document_limit INT;
 BEGIN
-    SELECT plan INTO workspace_plan FROM public.subscriptions WHERE workspace_id = NEW.workspace_id;
+    SELECT plan, status INTO workspace_plan, sub_status FROM public.subscriptions WHERE workspace_id = NEW.workspace_id;
     IF workspace_plan IS NULL THEN
+        workspace_plan := 'FREE';
+    END IF;
+
+    -- If subscription status is not active or trialing, override the plan to FREE
+    IF sub_status IS NOT NULL AND sub_status <> 'active' AND sub_status <> 'trialing' THEN
         workspace_plan := 'FREE';
     END IF;
 
@@ -610,6 +625,45 @@ DROP TRIGGER IF EXISTS enforce_document_limit_trigger ON public.documents;
 CREATE TRIGGER enforce_document_limit_trigger
 BEFORE INSERT ON public.documents
 FOR EACH ROW EXECUTE FUNCTION enforce_document_limit();
+
+
+CREATE OR REPLACE FUNCTION enforce_ai_extraction_limit() RETURNS TRIGGER AS $$
+DECLARE
+    workspace_plan TEXT;
+    sub_status TEXT;
+    extraction_count INT;
+    extraction_limit INT;
+BEGIN
+    SELECT plan, status INTO workspace_plan, sub_status FROM public.subscriptions WHERE workspace_id = NEW.workspace_id;
+    IF workspace_plan IS NULL THEN
+        workspace_plan := 'FREE';
+    END IF;
+
+    -- If subscription status is not active or trialing, override the plan to FREE
+    IF sub_status IS NOT NULL AND sub_status <> 'active' AND sub_status <> 'trialing' THEN
+        workspace_plan := 'FREE';
+    END IF;
+
+    SELECT limit_value INTO extraction_limit 
+    FROM public.plan_entitlements pe
+    JOIN public.plans p ON p.id = pe.plan_id
+    WHERE p.slug = workspace_plan AND pe.feature = 'max_ai_extractions';
+
+    IF extraction_limit IS NOT NULL THEN
+        SELECT COUNT(*) INTO extraction_count FROM public.document_extractions WHERE workspace_id = NEW.workspace_id;
+        IF extraction_count >= extraction_limit THEN
+            RAISE EXCEPTION 'LIMIT_REACHED: Maximum AI extraction limit exceeded for current plan.';
+        END IF;
+    END IF;
+
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS enforce_ai_extraction_limit_trigger ON public.document_extractions;
+CREATE TRIGGER enforce_ai_extraction_limit_trigger
+BEFORE INSERT ON public.document_extractions
+FOR EACH ROW EXECUTE FUNCTION enforce_ai_extraction_limit();
 
 -- ==============================================================================
 -- STRIPE WEBHOOK EVENTS (Idempotency)

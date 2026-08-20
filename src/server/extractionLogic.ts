@@ -54,6 +54,7 @@ export async function handleProcessExtraction(req: any, res: any) {
 
     // 2. Verify workspace membership or ownership (Authorization isolation)
     let isAuthorized = false;
+    let userRole = 'VIEWER';
     const { data: memberData, error: memberError } = await supabase
       .from('workspace_members')
       .select('role')
@@ -63,6 +64,7 @@ export async function handleProcessExtraction(req: any, res: any) {
 
     if (memberData) {
       isAuthorized = true;
+      userRole = memberData.role || 'MEMBER';
     } else {
       const { data: wsData } = await supabase
         .from('workspaces')
@@ -73,12 +75,18 @@ export async function handleProcessExtraction(req: any, res: any) {
 
       if (wsData) {
         isAuthorized = true;
+        userRole = 'ADMIN';
       }
     }
 
     if (!isAuthorized) {
       console.warn(`[handleProcessExtraction] reqId=${reqId} Forbidden: user ${userId} not in workspace ${workspaceId}`);
       return res.status(403).json({ error: 'Forbidden: Access denied to this workspace' });
+    }
+
+    if (userRole === 'VIEWER') {
+      console.warn(`[handleProcessExtraction] reqId=${reqId} Forbidden: viewer write-denial for user ${userId}`);
+      return res.status(403).json({ error: 'Forbidden: Write or executive access is denied for VIEWER role.' });
     }
 
     // 3. Verify contractor belongs to this workspace
@@ -106,6 +114,62 @@ export async function handleProcessExtraction(req: any, res: any) {
     if (docError || !docData) {
       console.error(`[handleProcessExtraction] reqId=${reqId} Document ${documentId} not found in workspace ${workspaceId}`);
       return res.status(404).json({ error: 'Document not found in workspace' });
+    }
+
+    // 4.5. Server-Side SAAS Limit Verification (AI OCR Extractions)
+    const { data: subscription } = await supabase
+      .from('subscriptions')
+      .select('plan, status')
+      .eq('workspace_id', workspaceId)
+      .maybeSingle();
+
+    const currentPlan = subscription?.plan || 'FREE';
+    const subStatus = subscription?.status || 'active';
+    const effectivePlan = (subStatus === 'active' || subStatus === 'trialing') ? currentPlan : 'FREE';
+
+    // Fetch the limit for this plan slug
+    const { data: entitlementPlan } = await supabase
+      .from('plans')
+      .select('id')
+      .eq('slug', effectivePlan)
+      .maybeSingle();
+
+    let limitValue: number | null = 10; // Fallback to 10 for Free
+    if (entitlementPlan?.id) {
+      const { data: entitlement } = await supabase
+        .from('plan_entitlements')
+        .select('limit_value')
+        .eq('plan_id', entitlementPlan.id)
+        .eq('feature', 'max_ai_extractions')
+        .maybeSingle();
+      if (entitlement) {
+        limitValue = entitlement.limit_value;
+      }
+    }
+
+    if (limitValue !== null) {
+      const { count: currentExtractions } = await supabase
+        .from('document_extractions')
+        .select('*', { count: 'exact', head: true })
+        .eq('workspace_id', workspaceId);
+
+      const countVal = currentExtractions || 0;
+      if (countVal >= limitValue) {
+        console.warn(`[handleProcessExtraction] reqId=${reqId} AI extraction limit reached (${countVal}/${limitValue}) for workspaceId=${workspaceId}`);
+        await supabase
+          .from('documents')
+          .update({
+            processing_status: 'FAILED',
+            processing_error: 'LIMIT_REACHED: Maximum AI extraction limit exceeded for current plan. Please upgrade your subscription.',
+            processed_at: new Date().toISOString(),
+          })
+          .eq('id', documentId);
+
+        return res.status(403).json({
+          error: 'LIMIT_REACHED: Maximum AI extraction limit exceeded for current plan. Please upgrade your subscription.',
+          processingStatus: 'FAILED',
+        });
+      }
     }
 
     // Set document status to PROCESSING in database
@@ -241,16 +305,16 @@ Rules:
     }
     parts.push({ text: extractionPrompt });
 
-    // Call Gemini with multi-model fallback and backoff for high demand spikes
+    // Call Gemini with high-availability model cascade and fast failover
     const candidateModels = [
-      'gemini-3.7-flash',
       'gemini-3.1-flash-lite',
       'gemini-flash-latest',
+      'gemini-3.7-flash',
     ];
 
     let responseText = '';
     let lastError: any = null;
-    let modelUsed = 'gemini-3.7-flash';
+    let modelUsed = 'gemini-3.1-flash-lite';
 
     for (const modelName of candidateModels) {
       if (responseText) break;
@@ -274,10 +338,20 @@ Rules:
             break;
           }
         } catch (err: any) {
-          console.warn(`[handleProcessExtraction] reqId=${reqId} Gemini call warning (${modelName} attempt ${attempt}):`, err?.message || err);
-          lastError = err;
-          if (attempt < 2 && (err?.status === 503 || err?.status === 429 || err?.status === 500)) {
-            await new Promise(r => setTimeout(r, 1500 * attempt));
+          const status = err?.status || err?.code || (err?.error && err.error.code);
+          const isHighDemand = status === 503 || status === 'UNAVAILABLE' || err?.message?.includes('high demand') || err?.message?.includes('503');
+          
+          if (isHighDemand) {
+            console.info(`[handleProcessExtraction] reqId=${reqId} ${modelName} experiencing high demand (503). Fast-switching to next candidate model.`);
+            lastError = err;
+            // On high demand / 503, immediately try the next model rather than blocking
+            break;
+          } else {
+            console.warn(`[handleProcessExtraction] reqId=${reqId} Gemini attempt error (${modelName} attempt ${attempt}):`, err?.message || err);
+            lastError = err;
+            if (attempt < 2 && (status === 429 || status === 500)) {
+              await new Promise(r => setTimeout(r, 1000 * attempt));
+            }
           }
         }
       }
@@ -649,6 +723,57 @@ export async function handleManualVerification(req: any, res: any) {
     if (userError || !userData?.user) {
       return res.status(401).json({ error: 'Authentication failed' });
     }
+    const userId = userData.user.id;
+
+    // 2. Verify workspace membership or ownership (Authorization isolation & IDOR defense)
+    let isAuthorized = false;
+    let userRole = 'VIEWER';
+    const { data: memberData, error: memberError } = await supabase
+      .from('workspace_members')
+      .select('role')
+      .eq('workspace_id', workspaceId)
+      .eq('user_id', userId)
+      .maybeSingle();
+
+    if (memberData) {
+      isAuthorized = true;
+      userRole = memberData.role || 'MEMBER';
+    } else {
+      const { data: wsData } = await supabase
+        .from('workspaces')
+        .select('id, owner_id')
+        .eq('id', workspaceId)
+        .eq('owner_id', userId)
+        .maybeSingle();
+
+      if (wsData) {
+        isAuthorized = true;
+        userRole = 'ADMIN';
+      }
+    }
+
+    if (!isAuthorized) {
+      console.warn(`[handleManualVerification] reqId=${reqId} Forbidden: user ${userId} not in workspace ${workspaceId}`);
+      return res.status(403).json({ error: 'Forbidden: Access denied to this workspace' });
+    }
+
+    if (userRole === 'VIEWER') {
+      console.warn(`[handleManualVerification] reqId=${reqId} Forbidden: viewer write-denial for user ${userId}`);
+      return res.status(403).json({ error: 'Forbidden: Write or executive access is denied for VIEWER role.' });
+    }
+
+    // 3. Verify document belongs to the workspace
+    const { data: docData, error: docError } = await supabase
+      .from('documents')
+      .select('id, contractor_id, name')
+      .eq('id', documentId)
+      .eq('workspace_id', workspaceId)
+      .maybeSingle();
+
+    if (docError || !docData) {
+      console.warn(`[handleManualVerification] reqId=${reqId} Document not found in workspace: doc=${documentId}, ws=${workspaceId}`);
+      return res.status(404).json({ error: 'Document not found in workspace' });
+    }
 
     // Determine document validity & expiration status on manual decision
     let calculatedDocStatus: 'VALID' | 'EXPIRING' | 'EXPIRED' | 'REJECTED' | 'PENDING_REVIEW' = 'PENDING_REVIEW';
@@ -696,7 +821,7 @@ export async function handleManualVerification(req: any, res: any) {
 
     if (updateError) {
       console.error(`[handleManualVerification] Update error:`, updateError);
-      return res.status(500).json({ error: updateError.message || 'Internal server error' });
+      return res.status(500).json({ error: 'Failed to update document verification status' });
     }
 
     // Action name and description

@@ -33,6 +33,24 @@ function mapNotificationFromDB(row: any): AppNotification {
   };
 }
 
+function isTestNotification(record: AppNotification): boolean {
+  const cName = (record.contractorName || '').toUpperCase();
+  const dName = (record.documentName || '').toUpperCase();
+  const title = (record.title || '').toUpperCase();
+  return (
+    cName.includes('[TEST') ||
+    cName.includes('[E2E') ||
+    cName.includes('[QA') ||
+    dName.includes('[TEST') ||
+    dName.includes('[E2E') ||
+    dName.includes('[QA') ||
+    title.includes('[TEST') ||
+    title.includes('[E2E') ||
+    title.includes('[QA') ||
+    Boolean(record.metadata?.isTest)
+  );
+}
+
 export const notificationService = {
   /**
    * Fetches notifications for a workspace with optional filters.
@@ -99,7 +117,9 @@ export const notificationService = {
         return { data: [], unreadCount: 0, error: error.message };
       }
 
-      const mapped = (data || []).map(mapNotificationFromDB);
+      const mapped = (data || [])
+        .map(mapNotificationFromDB)
+        .filter(n => !isTestNotification(n));
       const unreadCount = mapped.filter(n => !n.read).length;
 
       return { data: mapped, unreadCount };

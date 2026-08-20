@@ -87,7 +87,9 @@ export const documentService = {
         return { data: [], error: error.message };
       }
 
-      const docs = (data || []).map(mapDocumentFromDB);
+      const docs = (data || [])
+        .filter((row: any) => !row.name?.startsWith('[TEST') && !row.name?.startsWith('[E2E'))
+        .map(mapDocumentFromDB);
       return { data: docs };
     } catch (err: any) {
       return { data: [], error: err?.message || 'Failed to list documents' };

@@ -42,9 +42,10 @@ export const billingService = {
 
       const now = new Date();
       const isTrial = data.trial_end && new Date(data.trial_end) > now;
+      const isActive = data.status === 'active' || data.status === 'trialing';
 
       return {
-        plan: data.plan || 'FREE',
+        plan: isActive ? (data.plan || 'FREE') : 'FREE',
         status: data.status || 'active',
         isTrial: !!isTrial
       };

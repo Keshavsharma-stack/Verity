@@ -778,7 +778,7 @@ export function Documents() {
                       <div><strong className="text-zinc-300">Uploaded:</strong> {formatDate(inspectingDoc.uploadedAt)}</div>
                       <div><strong className="text-zinc-300">File Size:</strong> {(inspectingDoc.fileSize / 1024).toFixed(1)} KB</div>
                       <div>
-                        <strong className="text-zinc-300">OCR Engine:</strong> {inspectingExtraction?.modelUsed || 'gemini-3.7-flash'}
+                        <strong className="text-zinc-300">OCR Engine:</strong> {inspectingExtraction?.modelUsed || 'gemini-3.1-flash-lite'}
                       </div>
                       <div>
                         <strong className="text-zinc-300">Decision Mode:</strong> {

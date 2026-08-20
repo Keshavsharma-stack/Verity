@@ -115,7 +115,7 @@ app.post('/api/notifications/mark-all-read', async (req, res) => {
 // -----------------------------------------------------------------------------
 // CRON API (Scheduled Expiration Processing)
 // -----------------------------------------------------------------------------
-app.post('/api/cron/process-expirations', async (req, res) => {
+app.all('/api/cron/process-expirations', async (req, res) => {
   return handleCronProcessExpirations(req, res);
 });
 

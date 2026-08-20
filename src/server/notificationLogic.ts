@@ -336,11 +336,12 @@ export async function runGlobalExpirationScan(referenceDate?: Date): Promise<{
   workspacesProcessed: number;
   totalNewNotifications: number;
   totalEmailsSent: number;
+  totalScannedDocuments: number;
 }> {
   const supabase = getSupabaseServerClient();
   if (!supabase) {
     console.warn('[ExpirationScheduler] Supabase server client not configured, skipping scan.');
-    return { workspacesProcessed: 0, totalNewNotifications: 0, totalEmailsSent: 0 };
+    return { workspacesProcessed: 0, totalNewNotifications: 0, totalEmailsSent: 0, totalScannedDocuments: 0 };
   }
 
   try {
@@ -350,57 +351,67 @@ export async function runGlobalExpirationScan(referenceDate?: Date): Promise<{
 
     if (error || !workspaces) {
       console.error('[ExpirationScheduler] Failed to fetch workspaces:', error?.message);
-      return { workspacesProcessed: 0, totalNewNotifications: 0, totalEmailsSent: 0 };
+      return { workspacesProcessed: 0, totalNewNotifications: 0, totalEmailsSent: 0, totalScannedDocuments: 0 };
     }
 
     let totalNewNotifications = 0;
     let totalEmailsSent = 0;
+    let totalScannedDocuments = 0;
 
     for (const ws of workspaces) {
       const res = await processWorkspaceExpirationScan(supabase, ws.id, undefined, referenceDate);
       totalNewNotifications += res.newNotificationsCount;
       totalEmailsSent += res.emailsSent;
+      totalScannedDocuments += res.scannedDocuments;
     }
 
-    console.log(`[ExpirationScheduler] Global scan complete: ${workspaces.length} workspaces, ${totalNewNotifications} new notifications, ${totalEmailsSent} emails sent.`);
+    console.log(`[ExpirationScheduler] Global scan complete: ${workspaces.length} workspaces, ${totalScannedDocuments} documents scanned, ${totalNewNotifications} new notifications, ${totalEmailsSent} emails sent.`);
     return {
       workspacesProcessed: workspaces.length,
       totalNewNotifications,
       totalEmailsSent,
+      totalScannedDocuments,
     };
   } catch (err: any) {
     console.error('[ExpirationScheduler] Unexpected error during global scan:', err);
-    return { workspacesProcessed: 0, totalNewNotifications: 0, totalEmailsSent: 0 };
+    return { workspacesProcessed: 0, totalNewNotifications: 0, totalEmailsSent: 0, totalScannedDocuments: 0 };
   }
 }
 
 /**
- * POST /api/cron/process-expirations
+ * GET/POST /api/cron/process-expirations
  * Secure scheduled endpoint for global expiration processing.
  * Must be called with a valid CRON_SECRET in the Authorization header.
  */
 export async function handleCronProcessExpirations(req: any, res: any) {
   try {
+    // Ensure this route is never cached by Vercel or other CDNs
+    res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate, max-age=0');
+    
+    console.log('[Cron] Execution started for /api/cron/process-expirations');
+
     const authHeader = req.headers?.authorization || req.headers?.Authorization;
     const expectedSecret = process.env.CRON_SECRET;
 
     if (!expectedSecret) {
-      console.error('[Cron] CRON_SECRET is not configured in the environment.');
+      console.error('[Cron] Authentication Result: FAILED - CRON_SECRET is not configured in the environment.');
       return res.status(500).json({ error: 'Server configuration error: CRON_SECRET missing' });
     }
 
     if (authHeader !== `Bearer ${expectedSecret}`) {
-      console.warn('[Cron] Unauthorized attempt to run expiration scheduler.');
+      console.warn('[Cron] Authentication Result: FAILED - Unauthorized attempt to run expiration scheduler.');
       return res.status(401).json({ error: 'Unauthorized' });
     }
 
-    console.log('[Cron] Authorized global expiration scan initiated via scheduled endpoint.');
+    console.log('[Cron] Authentication Result: SUCCESS - Authorized global expiration scan initiated via scheduled endpoint.');
     
     // We execute the global scan. This function already initializes its own Supabase server client
     // using SUPABASE_SERVICE_ROLE_KEY to bypass RLS.
     const result = await runGlobalExpirationScan();
 
-    console.log('[Cron] Global expiration scan completed successfully.');
+    console.log(`[Cron] Scan details: Documents scanned: ${result.totalScannedDocuments}, Notifications created: ${result.totalNewNotifications}`);
+    console.log('[Cron] Execution completed successfully.');
+
     return res.status(200).json({
       success: true,
       message: 'Expiration scan executed successfully',

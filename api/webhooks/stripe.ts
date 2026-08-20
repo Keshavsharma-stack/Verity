@@ -1,4 +1,4 @@
-import { handleStripeWebhook } from '../../src/server/billingLogic';
+import { handleStripeWebhook } from '../../src/server/billingLogic.js';
 
 export const config = {
   api: {

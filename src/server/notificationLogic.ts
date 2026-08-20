@@ -1,8 +1,8 @@
 import { randomUUID } from 'crypto';
 import { createClient } from '@supabase/supabase-js';
-import { sendTransactionalEmail, EmailDispatchResult } from './emailProvider';
-import { renderEmail, EmailTemplateType, EmailTemplateData } from './emailTemplates';
-import { calculateDaysRemaining, evaluateExpiration } from '../lib/expiration';
+import { sendTransactionalEmail, EmailDispatchResult } from './emailProvider.js';
+import { renderEmail, EmailTemplateType, EmailTemplateData } from './emailTemplates.js';
+import { calculateDaysRemaining, evaluateExpiration } from '../lib/expiration.js';
 
 export function getSupabaseServerClient() {
   const supabaseUrl = process.env.VITE_SUPABASE_URL || process.env.SUPABASE_URL || '';

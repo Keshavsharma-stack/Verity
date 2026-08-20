@@ -1,4 +1,4 @@
-import { handleProcessQueue } from '../../src/server/reminderLogic';
+import { handleProcessQueue } from '../../src/server/reminderLogic.js';
 
 export default async function handler(req: any, res: any) {
   if (req.method !== 'POST') {

@@ -1,4 +1,4 @@
-import { handleCronProcessExpirations } from '../../src/server/notificationLogic';
+import { handleCronProcessExpirations } from '../../src/server/notificationLogic.js';
 
 export default async function handler(req: any, res: any) {
   // Support both GET and POST (Vercel Cron uses GET)

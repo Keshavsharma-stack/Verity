@@ -1,4 +1,4 @@
-import { handlePortal } from '../../src/server/billingLogic';
+import { handlePortal } from '../../src/server/billingLogic.js';
 
 export default async function handler(req: any, res: any) {
   if (req.method !== 'POST') {

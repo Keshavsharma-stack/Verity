@@ -1,4 +1,4 @@
-import { handleProcessExtraction } from '../../src/server/extractionLogic';
+import { handleProcessExtraction } from '../../src/server/extractionLogic.js';
 
 export default async function handler(req: any, res: any) {
   if (req.method !== 'POST') {

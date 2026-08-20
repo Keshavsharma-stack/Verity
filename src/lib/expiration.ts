@@ -1,4 +1,4 @@
-import { ExpirationStatusCategory } from '../types';
+import { ExpirationStatusCategory } from '../types/index.js';
 
 export type ExpirationClassification = 'EXPIRED' | 'CRITICAL' | 'UPCOMING' | 'ACTIVE' | 'PERMANENT';
 

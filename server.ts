@@ -23,6 +23,7 @@ import {
   handleCheckout,
   handlePortal,
   handleStripeWebhook,
+  handleCashfreeWebhook,
 } from './src/server/billingLogic';
 
 dotenv.config();
@@ -33,6 +34,11 @@ const PORT = 3000;
 // Stripe Webhook needs raw body before express.json()
 app.post('/api/webhooks/stripe', express.raw({ type: 'application/json' }), async (req, res) => {
   return handleStripeWebhook(req, res);
+});
+
+// Cashfree Webhook needs raw body before express.json()
+app.post('/api/webhooks/cashfree', express.raw({ type: 'application/json' }), async (req, res) => {
+  return handleCashfreeWebhook(req, res);
 });
 
 app.use(express.json({ limit: '25mb' }));

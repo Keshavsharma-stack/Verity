@@ -1,6 +1,7 @@
 import { createClient } from '@supabase/supabase-js';
 import Stripe from 'stripe';
 import { randomUUID } from 'crypto';
+import crypto from 'crypto';
 
 const supabaseUrl = process.env.VITE_SUPABASE_URL || process.env.SUPABASE_URL;
 const supabaseAnonKey = process.env.VITE_SUPABASE_ANON_KEY || process.env.SUPABASE_ANON_KEY;
@@ -19,6 +20,9 @@ function getSupabaseUserClient(authHeader: string) {
   });
 }
 
+// -----------------------------------------------------------------------------
+// STRIPE FALLBACK CLIENT & WEBHOK HANDLER (Preserved for rollback safety)
+// -----------------------------------------------------------------------------
 let stripeClient: Stripe | null = null;
 function getStripe(): Stripe {
   if (!stripeClient) {
@@ -52,9 +56,37 @@ function resolveAppOrigin(req: any): string {
   return 'https://veritycompliance.app';
 }
 
-/**
- * POST /api/billing/checkout
- */
+// -----------------------------------------------------------------------------
+// CASHFREE CLIENT & UTILS
+// -----------------------------------------------------------------------------
+function getCashfreeBaseUrl(): string {
+  const env = process.env.CASHFREE_ENV || 'SANDBOX';
+  if (env.toUpperCase() === 'PROD' || env.toUpperCase() === 'PRODUCTION') {
+    return 'https://api.cashfree.com/pg';
+  }
+  return 'https://sandbox.cashfree.com/pg';
+}
+
+function verifyCashfreeWebhookSignature(
+  rawBody: string,
+  signature: string,
+  timestamp: string,
+  secretKey: string
+): boolean {
+  if (!signature || !timestamp || !secretKey) {
+    return false;
+  }
+  const data = timestamp + "." + rawBody;
+  const computedSignature = crypto
+    .createHmac('sha256', secretKey)
+    .update(data)
+    .digest('base64');
+  return computedSignature === signature;
+}
+
+// -----------------------------------------------------------------------------
+// POST /api/billing/checkout (Replaced with Cashfree Sandbox Billing)
+// -----------------------------------------------------------------------------
 export async function handleCheckout(req: any, res: any) {
   const reqId = randomUUID();
   try {
@@ -91,7 +123,7 @@ export async function handleCheckout(req: any, res: any) {
     // Fetch workspace
     const { data: workspace, error: wsError } = await adminClient
       .from('workspaces')
-      .select('id, name, stripe_customer_id')
+      .select('id, name')
       .eq('id', workspaceId)
       .single();
 
@@ -99,57 +131,102 @@ export async function handleCheckout(req: any, res: any) {
       return res.status(404).json({ error: 'Workspace not found', reqId });
     }
 
-    const stripe = getStripe();
-    let customerId = workspace.stripe_customer_id;
-
-    if (!customerId) {
-      const customer = await stripe.customers.create({
-        email: user.email,
-        name: workspace.name,
-        metadata: { workspaceId: workspace.id }
-      });
-      customerId = customer.id;
-
-      await adminClient
-        .from('workspaces')
-        .update({ stripe_customer_id: customerId, updated_at: new Date().toISOString() })
-        .eq('id', workspaceId);
+    const appId = process.env.CASHFREE_APP_ID;
+    const secretKey = process.env.CASHFREE_SECRET_KEY;
+    if (!appId || !secretKey) {
+      return res.status(500).json({ error: 'Cashfree credentials are not configured on the server', reqId });
     }
 
-    let priceId = '';
+    let planId = '';
     const slugUpper = planSlug.toUpperCase();
     if (slugUpper === 'STARTER') {
-      priceId = process.env.STRIPE_PRICE_ID_STARTER || '';
+      planId = process.env.CASHFREE_PLAN_STARTER || 'plan_starter';
     } else if (slugUpper === 'PRO') {
-      priceId = process.env.STRIPE_PRICE_ID_PRO || '';
-    }
-
-    if (!priceId) {
-      return res.status(400).json({ error: `Stripe price ID for plan ${slugUpper} is not configured`, reqId });
+      planId = process.env.CASHFREE_PLAN_PRO || 'plan_pro';
+    } else {
+      return res.status(400).json({ error: `Invalid plan slug: ${planSlug}`, reqId });
     }
 
     const origin = resolveAppOrigin(req);
+    const subscriptionId = `sub_ws_${workspaceId}_${Date.now()}`;
 
-    const session = await stripe.checkout.sessions.create({
-      customer: customerId,
-      payment_method_types: ['card'],
-      mode: 'subscription',
-      line_items: [{ price: priceId, quantity: 1 }],
-      success_url: `${origin}/settings/billing?session_id={CHECKOUT_SESSION_ID}`,
-      cancel_url: `${origin}/settings/billing`,
-      metadata: { workspaceId, planSlug: slugUpper }
+    // Clean phone input for Cashfree requirements
+    const customerPhone = '9999999999';
+
+    const cashfreePayload = {
+      subscription_id: subscriptionId,
+      plan_details: {
+        plan_id: planId
+      },
+      customer_details: {
+        customer_name: workspace.name || 'Workspace Administrator',
+        customer_email: user.email || 'billing@veritycompliance.app',
+        customer_phone: customerPhone
+      },
+      subscription_meta: {
+        return_url: `${origin}/settings/billing?cf_sub_id={sub_id}`
+      }
+    };
+
+    const cashfreeUrl = `${getCashfreeBaseUrl()}/subscriptions`;
+    console.log(`[Checkout [${reqId}]] Calling Cashfree Sandbox API: ${cashfreeUrl}`);
+
+    const cfResponse = await fetch(cashfreeUrl, {
+      method: 'POST',
+      headers: {
+        'X-Client-Id': appId,
+        'X-Client-Secret': secretKey,
+        'x-api-version': '2026-01-01',
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify(cashfreePayload)
     });
 
-    return res.status(200).json({ url: session.url, reqId });
+    const cfData = await cfResponse.json() as any;
+
+    if (!cfResponse.ok) {
+      console.error(`[Checkout [${reqId}]] Cashfree API error:`, cfData);
+      return res.status(400).json({
+        error: cfData.message || 'Failed to create subscription session with Cashfree',
+        reqId
+      });
+    }
+
+    const authLink = cfData.auth_link || cfData.authLink;
+    if (!authLink) {
+      console.error(`[Checkout [${reqId}]] Cashfree response missing authLink:`, cfData);
+      return res.status(500).json({ error: 'Authorization URL was not generated by Cashfree', reqId });
+    }
+
+    // Save pending Cashfree subscription mapping in local DB
+    const { data: planRecord } = await adminClient
+      .from('plans')
+      .select('id')
+      .eq('slug', slugUpper)
+      .maybeSingle();
+
+    await adminClient
+      .from('subscriptions')
+      .upsert({
+        workspace_id: workspaceId,
+        plan_id: planRecord?.id || null,
+        plan: slugUpper,
+        status: 'initialized',
+        cashfree_subscription_id: subscriptionId,
+        cashfree_plan_id: planId,
+        updated_at: new Date().toISOString()
+      }, { onConflict: 'workspace_id' });
+
+    return res.status(200).json({ url: authLink, reqId });
   } catch (err: any) {
     console.error(`[Checkout [${reqId}]] Error:`, err);
     return res.status(500).json({ error: 'Internal server error during checkout creation', reqId });
   }
 }
 
-/**
- * POST /api/billing/portal
- */
+// -----------------------------------------------------------------------------
+// POST /api/billing/portal (Custom Self-Service Cancel / Rollback Safe portal)
+// -----------------------------------------------------------------------------
 export async function handlePortal(req: any, res: any) {
   const reqId = randomUUID();
   try {
@@ -182,34 +259,299 @@ export async function handlePortal(req: any, res: any) {
       return res.status(403).json({ error: 'Forbidden: Workspace ADMIN role required', reqId });
     }
 
-    const { data: workspace } = await adminClient
-      .from('workspaces')
-      .select('stripe_customer_id')
-      .eq('id', workspaceId)
-      .single();
+    const { data: subscription } = await adminClient
+      .from('subscriptions')
+      .select('*')
+      .eq('workspace_id', workspaceId)
+      .maybeSingle();
 
-    if (!workspace || !workspace.stripe_customer_id) {
-      return res.status(400).json({ error: 'No active Stripe customer found for this workspace', reqId });
+    const appId = process.env.CASHFREE_APP_ID;
+    const secretKey = process.env.CASHFREE_SECRET_KEY;
+
+    // ROLLBACK SAFETY: If legacy Stripe subscription is active, direct to Stripe portal instead
+    if (subscription?.stripe_subscription_id && !subscription?.cashfree_subscription_id) {
+      if (subscription.stripe_customer_id) {
+        const stripe = getStripe();
+        const origin = resolveAppOrigin(req);
+        const portalSession = await stripe.billingPortal.sessions.create({
+          customer: subscription.stripe_customer_id,
+          return_url: `${origin}/settings/billing`
+        });
+        return res.status(200).json({ url: portalSession.url, reqId });
+      }
     }
 
-    const stripe = getStripe();
-    const origin = resolveAppOrigin(req);
+    const cashfreeSubId = subscription?.cashfree_subscription_id;
+    if (!cashfreeSubId) {
+      return res.status(400).json({ error: 'No active Cashfree subscription found to cancel', reqId });
+    }
 
-    const portalSession = await stripe.billingPortal.sessions.create({
-      customer: workspace.stripe_customer_id,
-      return_url: `${origin}/settings/billing`
+    if (!appId || !secretKey) {
+      return res.status(500).json({ error: 'Cashfree credentials are not configured', reqId });
+    }
+
+    const cancelUrl = `${getCashfreeBaseUrl()}/subscriptions/${cashfreeSubId}/manage`;
+    console.log(`[Portal [${reqId}]] Calling Cashfree Cancel API: ${cancelUrl}`);
+
+    const cfResponse = await fetch(cancelUrl, {
+      method: 'POST',
+      headers: {
+        'X-Client-Id': appId,
+        'X-Client-Secret': secretKey,
+        'x-api-version': '2026-01-01',
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        action: 'CANCEL'
+      })
     });
 
-    return res.status(200).json({ url: portalSession.url, reqId });
+    const cfData = await cfResponse.json() as any;
+
+    if (!cfResponse.ok) {
+      console.error(`[Portal [${reqId}]] Cashfree cancel error:`, cfData);
+      return res.status(400).json({
+        error: cfData.message || 'Failed to cancel subscription with Cashfree',
+        reqId
+      });
+    }
+
+    // Downgrade subscription state locally to FREE instantly
+    await adminClient
+      .from('subscriptions')
+      .update({
+        plan: 'FREE',
+        status: 'canceled',
+        updated_at: new Date().toISOString()
+      })
+      .eq('workspace_id', workspaceId);
+
+    await adminClient.from('activities').insert({
+      workspace_id: workspaceId,
+      action: 'SUBSCRIPTION_CANCELED',
+      description: 'Subscription cancelled directly by Administrator via Cashfree API.'
+    });
+
+    const origin = resolveAppOrigin(req);
+    return res.status(200).json({ url: `${origin}/settings/billing?cancelled=true`, reqId });
   } catch (err: any) {
     console.error(`[Portal [${reqId}]] Error:`, err);
-    return res.status(500).json({ error: 'Internal server error during portal creation', reqId });
+    return res.status(500).json({ error: 'Internal server error during portal action', reqId });
   }
 }
 
-/**
- * POST /api/webhooks/stripe
- */
+// -----------------------------------------------------------------------------
+// POST /api/webhooks/cashfree (Webhook signature validation & idempotency)
+// -----------------------------------------------------------------------------
+export async function handleCashfreeWebhook(req: any, res: any) {
+  const reqId = randomUUID();
+  const signature = req.headers['x-webhook-signature'] || req.headers['X-Webhook-Signature'];
+  const timestamp = req.headers['x-webhook-timestamp'] || req.headers['X-Webhook-Timestamp'];
+  const secretKey = process.env.CASHFREE_SECRET_KEY;
+
+  if (!secretKey) {
+    console.error(`[CashfreeWebhook [${reqId}]] CASHFREE_SECRET_KEY is not configured`);
+    return res.status(500).json({ error: 'Webhook secret key not configured' });
+  }
+
+  // Extract raw body
+  let rawBody = '';
+  if (Buffer.isBuffer(req.body)) {
+    rawBody = req.body.toString('utf8');
+  } else if (typeof req.body === 'string') {
+    rawBody = req.body;
+  } else if (req.body) {
+    rawBody = JSON.stringify(req.body);
+  }
+
+  // 1. Signature Verification
+  const isSignatureValid = verifyCashfreeWebhookSignature(rawBody, signature, timestamp, secretKey);
+  if (!isSignatureValid) {
+    console.error(`[CashfreeWebhook [${reqId}]] Signature verification failed.`);
+    return res.status(400).json({ error: 'Webhook signature verification failed' });
+  }
+
+  let body: any;
+  try {
+    body = JSON.parse(rawBody);
+  } catch (err) {
+    console.error(`[CashfreeWebhook [${reqId}]] Failed to parse raw body JSON:`, err);
+    return res.status(400).json({ error: 'Invalid JSON payload' });
+  }
+
+  // Normalize Cashfree payload structure
+  const eventType = body.event_type || body.cf_event;
+  const subscriptionId = body.subscription_id || body.cf_subscriptionId || body.subscription_details?.subscription_id;
+  const status = body.subscription_status || body.cf_status || body.subscription_details?.subscription_status;
+  const planId = body.plan_id || body.cf_planId || body.plan_details?.plan_id || body.subscription_details?.plan_details?.plan_id;
+
+  if (!eventType) {
+    console.warn(`[CashfreeWebhook [${reqId}]] No event type found in payload.`);
+    return res.status(200).json({ received: true, ignored: true });
+  }
+
+  console.log(`[CashfreeWebhook [${reqId}]] Received Cashfree event: "${eventType}" for sub: "${subscriptionId}" with status: "${status}"`);
+
+  const adminClient = getSupabaseAdminClient();
+
+  // 2. Idempotency Check using the event details or signature
+  const eventId = body.event_id || body.cf_eventTime || signature || `${subscriptionId}_${status || 'update'}`;
+  try {
+    const { data: existingEvent } = await adminClient
+      .from('cashfree_events')
+      .select('event_id')
+      .eq('event_id', eventId)
+      .maybeSingle();
+
+    if (existingEvent) {
+      console.log(`[CashfreeWebhook [${reqId}]] Duplicate event "${eventId}" already processed. Skipping.`);
+      return res.status(200).json({ received: true, duplicate: true });
+    }
+
+    await adminClient
+      .from('cashfree_events')
+      .insert({ event_id: eventId });
+  } catch (dbErr) {
+    console.error(`[CashfreeWebhook [${reqId}]] Idempotency check error:`, dbErr);
+  }
+
+  // 3. Resolve Workspace ID by cashfree_subscription_id
+  let workspaceId = '';
+  if (subscriptionId) {
+    const { data: subRec } = await adminClient
+      .from('subscriptions')
+      .select('workspace_id')
+      .eq('cashfree_subscription_id', subscriptionId)
+      .maybeSingle();
+
+    if (subRec) {
+      workspaceId = subRec.workspace_id;
+    } else if (subscriptionId.startsWith('sub_ws_')) {
+      // Robust regex-free backchannel split
+      workspaceId = subscriptionId.split('_')[2];
+    }
+  }
+
+  if (!workspaceId) {
+    console.warn(`[CashfreeWebhook [${reqId}]] Could not map subscription_id "${subscriptionId}" to a workspace.`);
+    return res.status(200).json({ received: true, unmapped: true });
+  }
+
+  try {
+    switch (eventType) {
+      case 'SUBSCRIPTION_STATUS_CHANGE': {
+        const isPremiumStatus = status === 'ACTIVE';
+        const isCancelledStatus = ['CUSTOMER_CANCELLED', 'EXPIRED', 'LINK_EXPIRED'].includes(status);
+        const isPausedStatus = ['ON_HOLD', 'CUSTOMER_PAUSED'].includes(status);
+
+        let planSlug = 'FREE';
+        let subStatus = 'active';
+
+        if (isPremiumStatus) {
+          subStatus = 'active';
+          // Resolve plan slug from cashfree plan ID
+          if (planId && planId.includes('pro')) {
+            planSlug = 'PRO';
+          } else {
+            planSlug = 'STARTER';
+          }
+        } else if (isCancelledStatus) {
+          planSlug = 'FREE';
+          subStatus = 'canceled';
+        } else if (isPausedStatus) {
+          planSlug = 'FREE';
+          subStatus = 'past_due';
+        } else {
+          // preserve whatever exists or default to free
+          return res.status(200).json({ received: true });
+        }
+
+        const { data: planRecord } = await adminClient
+          .from('plans')
+          .select('id')
+          .eq('slug', planSlug)
+          .maybeSingle();
+
+        await adminClient
+          .from('subscriptions')
+          .upsert({
+            workspace_id: workspaceId,
+            plan_id: planRecord?.id || null,
+            plan: planSlug,
+            status: subStatus,
+            cashfree_subscription_id: subscriptionId,
+            cashfree_plan_id: planId || null,
+            updated_at: new Date().toISOString()
+          }, { onConflict: 'workspace_id' });
+
+        await adminClient.from('activities').insert({
+          workspace_id: workspaceId,
+          action: isPremiumStatus ? 'SUBSCRIPTION_CREATED' : (isCancelledStatus ? 'SUBSCRIPTION_CANCELED' : 'SUBSCRIPTION_UPDATED'),
+          description: `Subscription updated to plan ${planSlug} (Cashfree Status: ${status}).`
+        });
+        break;
+      }
+
+      case 'SUBSCRIPTION_PAYMENT_SUCCESS': {
+        let planSlug = 'STARTER';
+        if (planId && planId.includes('pro')) {
+          planSlug = 'PRO';
+        }
+
+        const { data: planRecord } = await adminClient
+          .from('plans')
+          .select('id')
+          .eq('slug', planSlug)
+          .maybeSingle();
+
+        await adminClient
+          .from('subscriptions')
+          .upsert({
+            workspace_id: workspaceId,
+            plan_id: planRecord?.id || null,
+            plan: planSlug,
+            status: 'active',
+            cashfree_subscription_id: subscriptionId,
+            cashfree_plan_id: planId || null,
+            updated_at: new Date().toISOString()
+          }, { onConflict: 'workspace_id' });
+
+        await adminClient.from('activities').insert({
+          workspace_id: workspaceId,
+          action: 'PAYMENT_SUCCESS',
+          description: `Subscription payment of ${planSlug} processed successfully via Cashfree.`
+        });
+        break;
+      }
+
+      case 'SUBSCRIPTION_PAYMENT_FAILED': {
+        await adminClient
+          .from('subscriptions')
+          .update({
+            status: 'past_due',
+            updated_at: new Date().toISOString()
+          })
+          .eq('workspace_id', workspaceId);
+
+        await adminClient.from('activities').insert({
+          workspace_id: workspaceId,
+          action: 'PAYMENT_FAILED',
+          description: 'Subscription recurring charge failed on Cashfree. Marked as past_due.'
+        });
+        break;
+      }
+    }
+
+    return res.status(200).json({ received: true });
+  } catch (err: any) {
+    console.error(`[CashfreeWebhook [${reqId}]] Processing error:`, err);
+    return res.status(500).json({ error: 'Webhook event processing error' });
+  }
+}
+
+// -----------------------------------------------------------------------------
+// STRIPE WEBHOOK EVENT HANDLER (Kept intact for legacy checkout rollbacks)
+// -----------------------------------------------------------------------------
 export async function handleStripeWebhook(req: any, res: any) {
   const reqId = randomUUID();
   const sig = req.headers['stripe-signature'];
@@ -224,7 +566,7 @@ export async function handleStripeWebhook(req: any, res: any) {
   let event: Stripe.Event;
 
   try {
-    const rawBody = req.body; // must be Buffer / raw body from express.raw()
+    const rawBody = req.body;
     event = stripe.webhooks.constructEvent(rawBody, sig, webhookSecret);
   } catch (err: any) {
     console.error(`[Webhook [${reqId}]] Signature verification failed:`, err.message);
@@ -233,7 +575,6 @@ export async function handleStripeWebhook(req: any, res: any) {
 
   const adminClient = getSupabaseAdminClient();
 
-  // 1. Idempotency Check
   try {
     const { data: existingEvent } = await adminClient
       .from('stripe_events')
@@ -262,7 +603,7 @@ export async function handleStripeWebhook(req: any, res: any) {
         const planSlugMeta = session.metadata?.planSlug || 'STARTER';
 
         if (subscriptionId) {
-          const subscriptionObj = event.data.object.subscription ? await stripe.subscriptions.retrieve(subscriptionId) as any : (await stripe.subscriptions.retrieve(subscriptionId)) as any;
+          const subscriptionObj = (await stripe.subscriptions.retrieve(subscriptionId)) as any;
           const priceId = subscriptionObj.items.data[0]?.price.id;
 
           let workspaceId = workspaceIdMeta;
@@ -276,7 +617,6 @@ export async function handleStripeWebhook(req: any, res: any) {
           }
 
           if (workspaceId) {
-            // Find internal plan id
             const { data: planRecord } = await adminClient
               .from('plans')
               .select('id')
@@ -331,7 +671,7 @@ export async function handleStripeWebhook(req: any, res: any) {
             } else if (priceId === process.env.STRIPE_PRICE_ID_STARTER) {
               planSlug = 'STARTER';
             } else {
-              planSlug = 'STARTER'; // default paid fallback
+              planSlug = 'STARTER';
             }
           }
 

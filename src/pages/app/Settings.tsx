@@ -319,7 +319,7 @@ export function SettingsBilling() {
       <CardHeader className="bg-zinc-950/60 border-b border-zinc-800/80 flex flex-row items-center justify-between">
         <CardTitle className="text-sm font-bold text-zinc-200">Active Subscription & Invoicing</CardTitle>
         <span className="text-[10px] bg-red-950/80 border border-red-800/60 text-red-300 px-2 py-0.5 rounded font-bold uppercase tracking-wider">
-          Stripe Secured Billing
+          Cashfree Secured Billing
         </span>
       </CardHeader>
       <CardContent className="pt-6 space-y-6">
@@ -380,7 +380,6 @@ export function SettingsBilling() {
                   Upgrade to Starter ($49/mo)
                 </Button>
                 <Button 
-                  variant="outline" 
                   onClick={() => handleUpgrade('PRO')} 
                   disabled={actionLoading}
                   className="text-xs border-red-500/50 text-red-400 hover:bg-red-950/40"
@@ -394,18 +393,18 @@ export function SettingsBilling() {
                 variant="outline" 
                 onClick={handleManagePortal} 
                 disabled={actionLoading}
-                className="text-xs"
+                className="text-xs border-red-500/50 text-red-400 hover:bg-red-950/40"
               >
                 {actionLoading ? <Loader2 className="w-4 h-4 animate-spin mr-1.5" /> : null}
-                Manage Billing & Invoicing (Stripe Portal)
+                Cancel Active Subscription
               </Button>
             )}
           </div>
         </div>
         
         <div className="text-xs text-zinc-500 space-y-1">
-          <p>🔒 All payments and subscriptions are securely processed by Stripe. Checkout sessions require workspace administrator privileges.</p>
-          <p>Environment requirement status: <code className="text-zinc-400">STRIPE_SECRET_KEY</code>, <code className="text-zinc-400">STRIPE_WEBHOOK_SECRET</code>, <code className="text-zinc-400">STRIPE_PRICE_ID_STARTER</code>, <code className="text-zinc-400">STRIPE_PRICE_ID_PRO</code>.</p>
+          <p>🔒 All payments and subscriptions are securely processed by Cashfree Payments. Checkout sessions require workspace administrator privileges.</p>
+          <p>Environment requirement status: <code className="text-zinc-400">CASHFREE_APP_ID</code>, <code className="text-zinc-400">CASHFREE_SECRET_KEY</code>, <code className="text-zinc-400">CASHFREE_PLAN_STARTER</code>, <code className="text-zinc-400">CASHFREE_PLAN_PRO</code>.</p>
         </div>
       </CardContent>
     </Card>

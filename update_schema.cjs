@@ -65,6 +65,8 @@ schema = schema.replace('CREATE TABLE IF NOT EXISTS public.subscriptions (', `CR
     plan TEXT NOT NULL DEFAULT 'FREE',
     stripe_subscription_id TEXT,
     stripe_price_id TEXT,
+    cashfree_subscription_id TEXT,
+    cashfree_plan_id TEXT,
     cancel_at_period_end BOOLEAN DEFAULT false,
     current_period_start TIMESTAMP WITH TIME ZONE,
     current_period_end TIMESTAMP WITH TIME ZONE,

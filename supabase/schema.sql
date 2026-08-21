@@ -176,6 +176,27 @@ CREATE TABLE IF NOT EXISTS public.subscriptions (
     plan TEXT NOT NULL DEFAULT 'FREE',
     stripe_subscription_id TEXT,
     stripe_price_id TEXT,
+    cashfree_subscription_id TEXT,
+    cashfree_plan_id TEXT,
+    cancel_at_period_end BOOLEAN DEFAULT false,
+    current_period_start TIMESTAMP WITH TIME ZONE,
+    current_period_end TIMESTAMP WITH TIME ZONE,
+    trial_start TIMESTAMP WITH TIME ZONE,
+    trial_end TIMESTAMP WITH TIME ZONE,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT timezone('utc'::text, now()) NOT NULL,
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT timezone('utc'::text, now()) NOT NULL
+);
+-- DROP OLD SUBSCRIPTIONS DEF
+/*
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    workspace_id UUID NOT NULL UNIQUE REFERENCES public.workspaces(id) ON DELETE CASCADE,
+    plan_id UUID REFERENCES public.plans(id),
+    status TEXT NOT NULL DEFAULT 'active',
+    plan TEXT NOT NULL DEFAULT 'FREE',
+    stripe_subscription_id TEXT,
+    stripe_price_id TEXT,
+    cashfree_subscription_id TEXT,
+    cashfree_plan_id TEXT,
     cancel_at_period_end BOOLEAN DEFAULT false,
     current_period_start TIMESTAMP WITH TIME ZONE,
     current_period_end TIMESTAMP WITH TIME ZONE,
@@ -196,6 +217,7 @@ CREATE TABLE IF NOT EXISTS public.subscriptions (
 );
 
 -- 9. REMINDERS (Automated Expiration Checkpoints & Notices)
+*/
 */
 CREATE TABLE IF NOT EXISTS public.reminders (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
@@ -484,9 +506,16 @@ BEGIN
     RETURNING id INTO new_workspace_id;
 
     
+    
     INSERT INTO public.workspace_members (workspace_id, user_id, role)
     VALUES (new_workspace_id, new.id, 'ADMIN')
     ON CONFLICT (workspace_id, user_id) DO NOTHING;
+    
+    -- Assign free subscription
+    INSERT INTO public.subscriptions (workspace_id, plan, status, updated_at)
+    VALUES (new_workspace_id, 'FREE', 'active', timezone('utc'::text, now()))
+    ON CONFLICT (workspace_id) DO NOTHING;
+
     
     -- Assign free subscription
     INSERT INTO public.subscriptions (workspace_id, plan, status, updated_at)
@@ -674,6 +703,14 @@ CREATE TABLE IF NOT EXISTS public.stripe_events (
 );
 
 -- ==============================================================================
+-- CASHFREE WEBHOOK EVENTS (Idempotency)
+-- ==============================================================================
+CREATE TABLE IF NOT EXISTS public.cashfree_events (
+    event_id TEXT PRIMARY KEY,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT timezone('utc'::text, now()) NOT NULL
+);
+
+-- ==============================================================================
 -- PRODUCTION PERFORMANCE INDEXES
 -- ==============================================================================
 CREATE INDEX IF NOT EXISTS idx_workspace_members_user_id ON public.workspace_members(user_id);
@@ -694,4 +731,5 @@ CREATE INDEX IF NOT EXISTS idx_notifications_workspace_id ON public.notification
 CREATE INDEX IF NOT EXISTS idx_notifications_read ON public.notifications(workspace_id, read);
 CREATE INDEX IF NOT EXISTS idx_notifications_created_at ON public.notifications(workspace_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_stripe_events_event_id ON public.stripe_events(event_id);
+CREATE INDEX IF NOT EXISTS idx_cashfree_events_event_id ON public.cashfree_events(event_id);
 

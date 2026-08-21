@@ -1,8 +1,8 @@
-import { handlePortal } from '../../src/server/billingLogic';
+import { handleGetSubscription } from '../../src/server/billingLogic';
 
 export default async function handler(req: any, res: any) {
   try {
-    if (req.method !== 'POST') {
+    if (req.method !== 'GET' && req.method !== 'POST') {
       return res.status(405).json({ error: 'Method not allowed' });
     }
     if (typeof req.body === 'string') {
@@ -12,9 +12,9 @@ export default async function handler(req: any, res: any) {
         // ignore
       }
     }
-    return await handlePortal(req, res);
+    return await handleGetSubscription(req, res);
   } catch (err: any) {
-    console.error('Unhandled error in /api/billing/portal:', err);
+    console.error('Unhandled error in /api/billing/subscription:', err);
     return res.status(500).json({ error: 'Billing service temporarily unavailable' });
   }
 }

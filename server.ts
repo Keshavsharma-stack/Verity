@@ -20,6 +20,7 @@ import {
   handleCronProcessExpirations,
 } from './src/server/notificationLogic';
 import {
+  handleGetSubscription,
   handleCheckout,
   handlePortal,
   handleStripeWebhook,
@@ -89,9 +90,16 @@ app.post('/api/reminders/process-queue', async (req, res) => {
 });
 
 // -----------------------------------------------------------------------------
-// POST /api/billing/checkout & /api/billing/portal
-// Stripe Billing & Customer Portal Endpoints
+// BILLING API (Subscription, Checkout & Customer Portal Endpoints)
 // -----------------------------------------------------------------------------
+app.get('/api/billing/subscription', async (req, res) => {
+  return handleGetSubscription(req, res);
+});
+
+app.post('/api/billing/subscription', async (req, res) => {
+  return handleGetSubscription(req, res);
+});
+
 app.post('/api/billing/checkout', async (req, res) => {
   return handleCheckout(req, res);
 });
@@ -126,9 +134,20 @@ app.all('/api/cron/process-expirations', async (req, res) => {
   return handleCronProcessExpirations(req, res);
 });
 
-
 app.post('/api/cron/test-e2e', async (req, res) => {
   return testE2eHandler(req, res);
+});
+
+// -----------------------------------------------------------------------------
+// API Fallback & Error Handling (Always return JSON for /api/*, never HTML)
+// -----------------------------------------------------------------------------
+app.all('/api/*', (req, res) => {
+  res.status(404).json({ error: 'Endpoint not found' });
+});
+
+app.use('/api', (err: any, req: any, res: any, next: any) => {
+  console.error('Unhandled API Error:', err);
+  res.status(500).json({ error: 'Billing service temporarily unavailable' });
 });
 
 // -----------------------------------------------------------------------------

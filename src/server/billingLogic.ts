@@ -14,9 +14,15 @@ function getSupabaseUserClient(authHeader: string) {
   });
 }
 
-function getSupabaseUserClient(authHeader: string) {
-  return createClient(supabaseUrl!, supabaseAnonKey!, {
-    global: { headers: { authorization: authHeader } },
+function getSupabaseUserClient(authHeaderOrToken: string) {
+  let token = (authHeaderOrToken || '').trim();
+  while (/^bearer\s+/i.test(token)) {
+    token = token.replace(/^bearer\s+/i, '').trim();
+  }
+  token = token.replace(/^["']|["']$/g, '').trim();
+
+  return createClient(supabaseUrl!, serviceRoleKey!, {
+    global: { headers: { Authorization: `Bearer ${token}` } },
     auth: { persistSession: false, autoRefreshToken: false }
   });
 }
@@ -86,13 +92,120 @@ function verifyCashfreeWebhookSignature(
 }
 
 // -----------------------------------------------------------------------------
+// GET /api/billing/subscription (Unified workspace subscription state)
+// -----------------------------------------------------------------------------
+export async function handleGetSubscription(req: any, res: any) {
+  const reqId = randomUUID();
+  try {
+    const authHeader = req.headers?.authorization || req.headers?.Authorization;
+    if (!authHeader || typeof authHeader !== 'string') {
+      return res.status(401).json({ error: 'Unauthorized: Bearer token required', reqId });
+    }
+
+    let token = authHeader.trim();
+    while (/^bearer\s+/i.test(token)) {
+      token = token.replace(/^bearer\s+/i, '').trim();
+    }
+    token = token.replace(/^["']|["']$/g, '').trim();
+
+    if (!token) {
+      return res.status(401).json({ error: 'Unauthorized: Bearer token required', reqId });
+    }
+
+    const workspaceId = req.query?.workspaceId || req.body?.workspaceId;
+    if (!workspaceId) {
+      return res.status(400).json({ error: 'Missing required parameter: workspaceId', reqId });
+    }
+
+    const userClient = getSupabaseUserClient(token);
+    let { data: { user }, error: userError } = await userClient.auth.getUser(token);
+
+    if (userError || !user) {
+      const adminClient = getSupabaseAdminClient();
+      const fallbackResult = await adminClient.auth.getUser(token);
+      if (fallbackResult.data?.user && !fallbackResult.error) {
+        user = fallbackResult.data.user;
+        userError = null;
+      }
+    }
+
+    if (userError || !user) {
+      console.error(`[GetSubscription [${reqId}]] Token validation failed:`, userError?.message || userError);
+      return res.status(401).json({ error: 'Unauthorized: Invalid token', reqId });
+    }
+
+    const adminClient = getSupabaseAdminClient();
+
+    // Verify workspace membership
+    const { data: member, error: memberError } = await adminClient
+      .from('workspace_members')
+      .select('role')
+      .eq('workspace_id', workspaceId)
+      .eq('user_id', user.id)
+      .maybeSingle();
+
+    if (memberError || !member) {
+      return res.status(403).json({ error: 'Forbidden: Workspace membership required', reqId });
+    }
+
+    const { data: subData } = await adminClient
+      .from('subscriptions')
+      .select('*')
+      .eq('workspace_id', workspaceId)
+      .maybeSingle();
+
+    if (!subData) {
+      const { data: wsData } = await adminClient
+        .from('workspaces')
+        .select('plan')
+        .eq('id', workspaceId)
+        .maybeSingle();
+
+      const plan = wsData?.plan ? wsData.plan.toUpperCase() : 'FREE';
+      return res.status(200).json({
+        plan,
+        status: 'active',
+        isTrial: false,
+        reqId
+      });
+    }
+
+    const now = new Date();
+    const isTrial = subData.trial_end && new Date(subData.trial_end) > now;
+    const isActive = subData.status === 'active' || subData.status === 'trialing';
+
+    return res.status(200).json({
+      plan: isActive ? (subData.plan || 'FREE') : 'FREE',
+      status: subData.status || 'active',
+      isTrial: !!isTrial,
+      cashfreeSubscriptionId: subData.cashfree_subscription_id || null,
+      stripeSubscriptionId: subData.stripe_subscription_id || null,
+      reqId
+    });
+  } catch (err: any) {
+    console.error(`[GetSubscription [${reqId}]] Error:`, err);
+    return res.status(500).json({ error: 'Billing service temporarily unavailable', reqId });
+  }
+}
+
+// -----------------------------------------------------------------------------
 // POST /api/billing/checkout (Replaced with Cashfree Sandbox Billing)
 // -----------------------------------------------------------------------------
 export async function handleCheckout(req: any, res: any) {
   const reqId = randomUUID();
   try {
     const authHeader = req.headers?.authorization || req.headers?.Authorization;
-    if (!authHeader || typeof authHeader !== 'string' || !authHeader.startsWith('Bearer ')) {
+    if (!authHeader || typeof authHeader !== 'string') {
+      return res.status(401).json({ error: 'Unauthorized: Bearer token required', reqId });
+    }
+
+    let token = authHeader.trim();
+    while (/^bearer\s+/i.test(token)) {
+      token = token.replace(/^bearer\s+/i, '').trim();
+    }
+    token = token.replace(/^["']|["']$/g, '').trim();
+
+    if (!token) {
       return res.status(401).json({ error: 'Unauthorized: Bearer token required', reqId });
     }
 
@@ -101,9 +214,20 @@ export async function handleCheckout(req: any, res: any) {
       return res.status(400).json({ error: 'Missing required parameters: workspaceId, planSlug', reqId });
     }
 
-    const userClient = getSupabaseUserClient(authHeader);
-    const { data: { user }, error: userError } = await userClient.auth.getUser();
+    const userClient = getSupabaseUserClient(token);
+    let { data: { user }, error: userError } = await userClient.auth.getUser(token);
+
     if (userError || !user) {
+      const adminClient = getSupabaseAdminClient();
+      const fallbackResult = await adminClient.auth.getUser(token);
+      if (fallbackResult.data?.user && !fallbackResult.error) {
+        user = fallbackResult.data.user;
+        userError = null;
+      }
+    }
+
+    if (userError || !user) {
+      console.error(`[Checkout [${reqId}]] Token validation failed:`, userError?.message || userError);
       return res.status(401).json({ error: 'Unauthorized: Invalid token', reqId });
     }
 
@@ -232,7 +356,17 @@ export async function handlePortal(req: any, res: any) {
   const reqId = randomUUID();
   try {
     const authHeader = req.headers?.authorization || req.headers?.Authorization;
-    if (!authHeader || typeof authHeader !== 'string' || !authHeader.startsWith('Bearer ')) {
+    if (!authHeader || typeof authHeader !== 'string') {
+      return res.status(401).json({ error: 'Unauthorized: Bearer token required', reqId });
+    }
+
+    let token = authHeader.trim();
+    while (/^bearer\s+/i.test(token)) {
+      token = token.replace(/^bearer\s+/i, '').trim();
+    }
+    token = token.replace(/^["']|["']$/g, '').trim();
+
+    if (!token) {
       return res.status(401).json({ error: 'Unauthorized: Bearer token required', reqId });
     }
 
@@ -241,9 +375,20 @@ export async function handlePortal(req: any, res: any) {
       return res.status(400).json({ error: 'Missing workspaceId', reqId });
     }
 
-    const userClient = getSupabaseUserClient(authHeader);
-    const { data: { user }, error: userError } = await userClient.auth.getUser();
+    const userClient = getSupabaseUserClient(token);
+    let { data: { user }, error: userError } = await userClient.auth.getUser(token);
+
     if (userError || !user) {
+      const adminClient = getSupabaseAdminClient();
+      const fallbackResult = await adminClient.auth.getUser(token);
+      if (fallbackResult.data?.user && !fallbackResult.error) {
+        user = fallbackResult.data.user;
+        userError = null;
+      }
+    }
+
+    if (userError || !user) {
+      console.error(`[Portal [${reqId}]] Token validation failed:`, userError?.message || userError);
       return res.status(401).json({ error: 'Unauthorized: Invalid token', reqId });
     }
 

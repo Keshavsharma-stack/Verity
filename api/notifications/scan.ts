@@ -1,4 +1,4 @@
-import { handlePortal } from '../../src/server/billingLogic';
+import { handleScanNotifications } from '../../src/server/notificationLogic';
 
 export default async function handler(req: any, res: any) {
   try {
@@ -12,9 +12,9 @@ export default async function handler(req: any, res: any) {
         // ignore
       }
     }
-    return await handlePortal(req, res);
+    return await handleScanNotifications(req, res);
   } catch (err: any) {
-    console.error('Unhandled error in /api/billing/portal:', err);
-    return res.status(500).json({ error: 'Billing service temporarily unavailable' });
+    console.error('Unhandled error in /api/notifications/scan:', err);
+    return res.status(500).json({ error: 'Notification scan service temporarily unavailable' });
   }
 }

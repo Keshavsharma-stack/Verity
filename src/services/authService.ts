@@ -375,6 +375,44 @@ export const authService = {
     return { user: null, session: null };
   },
 
+  /**
+   * Retrieves a guaranteed fresh access token. Refreshes the session if expired or close to expiry.
+   */
+  async getValidAccessToken(): Promise<string | null> {
+    if (!isSupabaseConfigured() || !supabase) {
+      return null;
+    }
+
+    try {
+      // 1. Get current session
+      const { data: sessionData, error: sessionError } = await supabase.auth.getSession();
+      let session = sessionData?.session;
+
+      if (sessionError || !session) {
+        // Try refreshing if no active session in memory
+        const { data: refreshData, error: refreshError } = await supabase.auth.refreshSession();
+        if (refreshError || !refreshData?.session) {
+          return null;
+        }
+        return refreshData.session.access_token || null;
+      }
+
+      // Check if session token expires within 60 seconds
+      const nowInSec = Math.floor(Date.now() / 1000);
+      if (session.expires_at && session.expires_at - nowInSec < 60) {
+        const { data: refreshData, error: refreshError } = await supabase.auth.refreshSession();
+        if (!refreshError && refreshData?.session?.access_token) {
+          return refreshData.session.access_token;
+        }
+      }
+
+      return session.access_token || null;
+    } catch (err) {
+      console.error('Error obtaining valid access token:', err);
+      return null;
+    }
+  },
+
   async getCurrentUser(): Promise<User | null> {
     if (isSupabaseConfigured() && supabase) {
       try {

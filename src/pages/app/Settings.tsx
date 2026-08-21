@@ -6,6 +6,8 @@ import { NavLink, Outlet, Navigate, useLocation } from 'react-router-dom';
 import { Building2, Users, CreditCard, CheckCircle2, Check, Loader2, Cpu } from 'lucide-react';
 import { useAuth } from '../../hooks/useAuth';
 import { supabase, isSupabaseConfigured } from '../../lib/supabase';
+import { authService } from '../../services/authService';
+import { billingService } from '../../services/billingService';
 import { AdminQADiagnostics } from '../../components/admin/AdminQADiagnostics';
 
 export function Settings() {
@@ -207,36 +209,57 @@ export function SettingsTeam() {
 
 export function SettingsBilling() {
   const { user } = useAuth();
+  const location = useLocation();
   const [loading, setLoading] = React.useState(true);
   const [sub, setSub] = React.useState<{ plan: string; status: string; isTrial: boolean } | null>(null);
   const [usage, setUsage] = React.useState<any>(null);
   const [actionLoading, setActionLoading] = React.useState(false);
   const [errorMsg, setErrorMsg] = React.useState<string | null>(null);
 
-  React.useEffect(() => {
-    if (!user?.workspaceId) return;
+  const loadBillingData = React.useCallback(async () => {
+    if (!user?.workspaceId) {
+      setLoading(false);
+      return;
+    }
 
-    import('../../services/billingService').then(({ billingService }) => {
-      Promise.all([
-        billingService.getWorkspaceSubscription(user.workspaceId!),
-        billingService.getWorkspaceUsage(user.workspaceId!)
-      ]).then(([subData, usageData]) => {
-        setSub(subData);
-        setUsage(usageData);
-        setLoading(false);
-      });
-    });
-  }, [user]);
+    try {
+      setLoading(true);
+      const [subData, usageData] = await Promise.all([
+        billingService.getWorkspaceSubscription(user.workspaceId),
+        billingService.getWorkspaceUsage(user.workspaceId)
+      ]);
+      setSub(subData);
+      setUsage(usageData);
+    } catch (err: any) {
+      console.error('Error loading billing subscription data:', err);
+    } finally {
+      setLoading(false);
+    }
+  }, [user?.workspaceId]);
+
+  React.useEffect(() => {
+    loadBillingData();
+  }, [loadBillingData]);
+
+  // If user returns from checkout redirect (e.g. ?cf_sub_id=... or ?cancelled=true), reload latest state
+  React.useEffect(() => {
+    const params = new URLSearchParams(location.search);
+    if (params.get('cf_sub_id') || params.get('cancelled')) {
+      loadBillingData();
+    }
+  }, [location.search, loadBillingData]);
 
   const handleUpgrade = async (planSlug: string) => {
-    if (!user?.workspaceId) return;
+    if (!user?.workspaceId) {
+      setErrorMsg('No active workspace found');
+      return;
+    }
     setActionLoading(true);
     setErrorMsg(null);
     try {
-      const sessionData = await supabase.auth.getSession();
-      const token = sessionData.data.session?.access_token;
+      const token = await authService.getValidAccessToken();
       if (!token) {
-        throw new Error('Authentication token required');
+        throw new Error('Your session has expired. Please sign in again.');
       }
 
       const res = await fetch('/api/billing/checkout', {
@@ -251,7 +274,14 @@ export function SettingsBilling() {
         })
       });
 
-      const data = await res.json();
+      let data: any = {};
+      const text = await res.text();
+      try {
+        data = JSON.parse(text);
+      } catch {
+        data = { error: res.ok ? 'Unexpected response from server' : 'Billing service temporarily unavailable' };
+      }
+
       if (!res.ok) {
         throw new Error(data.error || 'Failed to create checkout session');
       }
@@ -266,14 +296,16 @@ export function SettingsBilling() {
   };
 
   const handleManagePortal = async () => {
-    if (!user?.workspaceId) return;
+    if (!user?.workspaceId) {
+      setErrorMsg('No active workspace found');
+      return;
+    }
     setActionLoading(true);
     setErrorMsg(null);
     try {
-      const sessionData = await supabase.auth.getSession();
-      const token = sessionData.data.session?.access_token;
+      const token = await authService.getValidAccessToken();
       if (!token) {
-        throw new Error('Authentication token required');
+        throw new Error('Your session has expired. Please sign in again.');
       }
 
       const res = await fetch('/api/billing/portal', {
@@ -287,13 +319,23 @@ export function SettingsBilling() {
         })
       });
 
-      const data = await res.json();
+      let data: any = {};
+      const text = await res.text();
+      try {
+        data = JSON.parse(text);
+      } catch {
+        data = { error: res.ok ? 'Unexpected response from server' : 'Billing service temporarily unavailable' };
+      }
+
       if (!res.ok) {
         throw new Error(data.error || 'Failed to create customer portal session');
       }
 
       if (data.url) {
         window.location.href = data.url;
+      } else {
+        await loadBillingData();
+        setActionLoading(false);
       }
     } catch (err: any) {
       setErrorMsg(err.message || 'Error opening billing portal');

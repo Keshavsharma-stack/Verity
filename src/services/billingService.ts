@@ -1,4 +1,5 @@
 import { supabase, isSupabaseConfigured } from '../lib/supabase';
+import { authService } from './authService';
 import { PlanType } from '../types';
 
 export interface UsageReport {
@@ -22,10 +23,44 @@ export interface UsageReport {
 export const billingService = {
   /**
    * Retrieves the current workspace subscription plan.
-   * If none exists or Supabase is not configured, returns a default FREE plan state.
+   * Uses authenticated API if available, with direct Supabase and default fallbacks.
    */
   async getWorkspaceSubscription(workspaceId: string): Promise<{ plan: string; status: string; isTrial: boolean }> {
-    if (!workspaceId || !isSupabaseConfigured() || !supabase) {
+    if (!workspaceId) {
+      return { plan: 'FREE', status: 'active', isTrial: false };
+    }
+
+    // Attempt 1: Try server-side unified /api/billing/subscription endpoint
+    try {
+      const token = await authService.getValidAccessToken();
+      if (token) {
+        const res = await fetch(`/api/billing/subscription?workspaceId=${encodeURIComponent(workspaceId)}`, {
+          headers: {
+            'Authorization': `Bearer ${token}`
+          }
+        });
+        if (res.ok) {
+          const text = await res.text();
+          try {
+            const data = JSON.parse(text);
+            if (data && data.plan) {
+              return {
+                plan: (data.plan || 'FREE').toUpperCase(),
+                status: data.status || 'active',
+                isTrial: Boolean(data.isTrial)
+              };
+            }
+          } catch {
+            // ignore non-json response and fallback to Supabase
+          }
+        }
+      }
+    } catch {
+      // ignore network errors and fallback to Supabase
+    }
+
+    // Attempt 2: Fallback to direct client-side Supabase query
+    if (!isSupabaseConfigured() || !supabase) {
       return { plan: 'FREE', status: 'active', isTrial: false };
     }
 
@@ -37,6 +72,16 @@ export const billingService = {
         .maybeSingle();
 
       if (error || !data) {
+        const { data: wsData } = await supabase
+          .from('workspaces')
+          .select('plan')
+          .eq('id', workspaceId)
+          .maybeSingle();
+
+        if (wsData?.plan && wsData.plan.toUpperCase() !== 'FREE') {
+          return { plan: wsData.plan.toUpperCase(), status: 'active', isTrial: false };
+        }
+
         return { plan: 'FREE', status: 'active', isTrial: false };
       }
 

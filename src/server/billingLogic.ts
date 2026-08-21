@@ -7,8 +7,9 @@ const supabaseUrl = process.env.VITE_SUPABASE_URL || process.env.SUPABASE_URL;
 const supabaseAnonKey = process.env.VITE_SUPABASE_ANON_KEY || process.env.SUPABASE_ANON_KEY;
 const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY || supabaseAnonKey;
 
-function getSupabaseAdminClient() {
+function getSupabaseUserClient(authHeader: string) {
   return createClient(supabaseUrl!, serviceRoleKey!, {
+    global: { headers: { authorization: authHeader } },
     auth: { persistSession: false, autoRefreshToken: false }
   });
 }

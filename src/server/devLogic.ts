@@ -1,5 +1,6 @@
 import { createClient } from '@supabase/supabase-js';
-import { processWorkspaceExpirationScan, getSupabaseUserClient } from './notificationLogic';
+import { processWorkspaceExpirationScan } from './notificationLogic.js';
+import { verifyUserToken, extractBearerToken, getSupabaseAdminClient } from './billingLogic.js';
 
 export async function handleE2ETest(req: any, res: any) {
   if (req.method !== 'POST') {
@@ -7,26 +8,26 @@ export async function handleE2ETest(req: any, res: any) {
   }
 
   try {
-    const authHeader = req.headers?.authorization || req.headers?.Authorization;
-    if (!authHeader) {
+    const token = extractBearerToken(req);
+    if (!token) {
       console.warn('[E2E Test / Security] Request rejected: Missing Authorization header');
       return res.status(401).json({ success: false, error: 'Unauthorized: Authentication required' });
     }
 
-    let supabase;
-    try {
-      supabase = getSupabaseUserClient(authHeader);
-    } catch (e: any) {
-      console.error('[E2E Test / Security] Failed to create user client:', e.message);
-      return res.status(401).json({ success: false, error: 'Unauthorized: Invalid authentication credentials' });
+    const { user, error: authError } = await verifyUserToken(token, 'E2E_TEST');
+    if (authError || !user) {
+      console.warn('[E2E Test / Security] User session verification failed:', authError);
+      return res.status(401).json({ success: false, error: `Unauthorized: ${authError || 'User session invalid'}` });
     }
+    const userId = user.id;
 
-    const { data: userData, error: userError } = await supabase.auth.getUser();
-    if (userError || !userData?.user) {
-      console.warn('[E2E Test / Security] User session verification failed:', userError?.message);
-      return res.status(401).json({ success: false, error: 'Unauthorized: User session invalid' });
+    let adminClient;
+    try {
+      adminClient = getSupabaseAdminClient();
+    } catch (e: any) {
+      console.error('[E2E Test / DB] Failed to create admin client:', e.message);
+      return res.status(500).json({ success: false, error: 'Supabase configuration missing on server' });
     }
-    const userId = userData.user.id;
 
     // Verify workspace and authorization role (ADMIN required)
     const requestedWorkspaceId = req.body?.workspaceId || req.query?.workspaceId;
@@ -35,7 +36,7 @@ export async function handleE2ETest(req: any, res: any) {
 
     if (requestedWorkspaceId) {
       // Verify user membership in requested workspace
-      const { data: requestedMember, error: reqMemErr } = await supabase
+      const { data: requestedMember, error: reqMemErr } = await adminClient
         .from('workspace_members')
         .select('workspace_id, role')
         .eq('workspace_id', requestedWorkspaceId)
@@ -46,7 +47,7 @@ export async function handleE2ETest(req: any, res: any) {
         workspaceId = requestedMember.workspace_id;
         userRole = requestedMember.role || 'MEMBER';
       } else {
-        const { data: requestedWs, error: reqWsErr } = await supabase
+        const { data: requestedWs, error: reqWsErr } = await adminClient
           .from('workspaces')
           .select('id, owner_id')
           .eq('id', requestedWorkspaceId)
@@ -61,7 +62,7 @@ export async function handleE2ETest(req: any, res: any) {
     }
 
     if (!workspaceId) {
-      const { data: memberData, error: memberError } = await supabase
+      const { data: memberData, error: memberError } = await adminClient
         .from('workspace_members')
         .select('workspace_id, role')
         .eq('user_id', userId)
@@ -72,7 +73,7 @@ export async function handleE2ETest(req: any, res: any) {
         workspaceId = memberData[0].workspace_id;
         userRole = memberData[0].role || 'MEMBER';
       } else {
-        const { data: workspaces, error: wsError } = await supabase
+        const { data: workspaces, error: wsError } = await adminClient
           .from('workspaces')
           .select('id, owner_id')
           .eq('owner_id', userId)
@@ -102,18 +103,8 @@ export async function handleE2ETest(req: any, res: any) {
 
     console.log(`[E2E Test] Admin authenticated (User: ${userId}, Workspace: ${workspaceId}, Role: ${userRole})`);
 
-    const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
-    const supabaseUrl = process.env.VITE_SUPABASE_URL || process.env.SUPABASE_URL || '';
-
-    let dbClient = supabase;
-    let authMode = 'AUTHENTICATED_USER_JWT';
-
-    if (serviceRoleKey && supabaseUrl) {
-      dbClient = createClient(supabaseUrl, serviceRoleKey, {
-        auth: { persistSession: false },
-      });
-      authMode = 'SERVICE_ROLE_KEY';
-    }
+    const dbClient = adminClient;
+    const authMode = 'SERVICE_ROLE_KEY';
 
     console.log(`[E2E Test] Database client operational with mode: ${authMode}`);
 
@@ -256,7 +247,7 @@ export async function handleE2ETest(req: any, res: any) {
       workspace_id: workspaceId,
       company_name: '[TEST MODE] CRITICAL CONTRACTOR',
       primary_contact: 'QA Lead',
-      email: userData.user.email || 'qa-test@veritycompliance.internal',
+      email: user.email || 'qa-test@veritycompliance.internal',
       trade: 'General Construction',
       status: 'NON_COMPLIANT',
       contractor_type: 'Subcontractor'
@@ -355,7 +346,7 @@ startxref
           cacheControl: '3600',
           contentType: 'application/pdf',
           upsert: true,
-          headers: authHeader ? { Authorization: authHeader } : undefined
+          headers: token ? { Authorization: `Bearer ${token}` } : undefined
         });
 
       if (!fileUploadErr && fileUploadData) {
@@ -536,7 +527,7 @@ startxref
     console.error('[E2E Test / Unhandled Error]', err);
     return res.status(500).json({ 
       success: false, 
-      error: 'An internal error occurred during the QA test execution.' 
+      error: err?.message || 'An internal error occurred during the QA test execution.' 
     });
   }
 }

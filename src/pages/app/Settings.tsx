@@ -9,6 +9,7 @@ import { supabase, isSupabaseConfigured } from '../../lib/supabase';
 import { authService } from '../../services/authService';
 import { billingService } from '../../services/billingService';
 import { AdminQADiagnostics } from '../../components/admin/AdminQADiagnostics';
+import { loadCashfreeSDK } from '../../lib/cashfree';
 
 export function Settings() {
   const location = useLocation();
@@ -286,8 +287,26 @@ export function SettingsBilling() {
         throw new Error(data.error || 'Failed to create checkout session');
       }
 
-      if (data.url) {
+      const sessionId =
+        data.subscriptionSessionId ||
+        data.subscription_session_id ||
+        data.subsSessionId ||
+        data.session_id;
+
+      const cashfreeMode = (data.cashfreeEnv || 'sandbox') === 'production' ? 'production' : 'sandbox';
+
+      if (sessionId) {
+        const CashfreeSDK = await loadCashfreeSDK();
+        const cashfree = CashfreeSDK({ mode: cashfreeMode });
+        await cashfree.subscriptionsCheckout({
+          subsSessionId: sessionId,
+          subscriptionSessionId: sessionId,
+          redirectTarget: '_self'
+        });
+      } else if (data.url) {
         window.location.href = data.url;
+      } else {
+        throw new Error('Cashfree did not return a valid subscription session ID');
       }
     } catch (err: any) {
       setErrorMsg(err.message || 'Error initiating checkout');

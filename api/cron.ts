@@ -38,14 +38,14 @@ export default async function handler(req: any, res: any) {
     ) {
       if (req.method !== 'GET' && req.method !== 'POST') {
         res.setHeader('Allow', ['GET', 'POST']);
-        return res.status(405).end(`Method ${req.method} Not Allowed`);
+        return res.status(405).json({ success: false, error: `Method ${req.method} Not Allowed` });
       }
       return await handleCronProcessExpirations(req, res);
     }
 
-    return res.status(404).json({ error: 'Cron endpoint not found' });
+    return res.status(404).json({ success: false, error: 'Cron endpoint not found' });
   } catch (err: any) {
     console.error('Unhandled error in /api/cron router:', err);
-    return res.status(500).json({ error: 'Cron service temporarily unavailable' });
+    return res.status(500).json({ success: false, error: err?.message || 'Cron service temporarily unavailable' });
   }
 }

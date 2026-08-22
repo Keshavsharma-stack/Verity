@@ -21,6 +21,7 @@ import {
 } from 'lucide-react';
 import { useAuth } from '../../hooks/useAuth';
 import { supabase } from '../../lib/supabase';
+import { authService } from '../../services/authService';
 
 interface TestResultData {
   success: boolean;
@@ -73,8 +74,11 @@ export function AdminQADiagnostics() {
     addLog('Initiating secure E2E Expiration & Idempotency verification...');
 
     try {
-      const session = (await supabase?.auth.getSession())?.data.session;
-      const token = session?.access_token;
+      let token = await authService.getValidAccessToken();
+      if (!token) {
+        const session = (await supabase?.auth.getSession())?.data.session;
+        token = session?.access_token || null;
+      }
 
       if (!token) {
         throw new Error('No active authenticated admin session found.');
@@ -93,7 +97,18 @@ export function AdminQADiagnostics() {
         })
       });
 
-      const data = await response.json();
+      const text = await response.text();
+      let data: any;
+      try {
+        data = JSON.parse(text);
+      } catch {
+        data = {
+          success: false,
+          error: response.ok
+            ? 'Invalid response format received from server.'
+            : `Server error (HTTP ${response.status}): ${text.slice(0, 150)}`
+        };
+      }
 
       if (!response.ok || !data.success) {
         addLog(`ERROR: ${data.error || 'Test run failed.'}`);
@@ -123,8 +138,11 @@ export function AdminQADiagnostics() {
     addLog('Initiating test data cleanup in workspace...');
 
     try {
-      const session = (await supabase?.auth.getSession())?.data.session;
-      const token = session?.access_token;
+      let token = await authService.getValidAccessToken();
+      if (!token) {
+        const session = (await supabase?.auth.getSession())?.data.session;
+        token = session?.access_token || null;
+      }
 
       const response = await fetch('/api/cron/test-e2e?cleanup=true', {
         method: 'POST',
@@ -138,7 +156,18 @@ export function AdminQADiagnostics() {
         })
       });
 
-      const data = await response.json();
+      const text = await response.text();
+      let data: any;
+      try {
+        data = JSON.parse(text);
+      } catch {
+        data = {
+          success: false,
+          error: response.ok
+            ? 'Invalid response format received from server.'
+            : `Server error (HTTP ${response.status}): ${text.slice(0, 150)}`
+        };
+      }
 
       if (data.success) {
         addLog('SUCCESS: All test contractors, policies, and generated test notifications have been removed.');

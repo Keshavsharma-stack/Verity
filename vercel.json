@@ -6,24 +6,48 @@
       "destination": "/api/billing?path=:path*"
     },
     {
+      "source": "/api/billing",
+      "destination": "/api/billing"
+    },
+    {
       "source": "/api/webhooks/:path*",
       "destination": "/api/webhooks?path=:path*"
+    },
+    {
+      "source": "/api/webhooks",
+      "destination": "/api/webhooks"
     },
     {
       "source": "/api/notifications/:path*",
       "destination": "/api/notifications?path=:path*"
     },
     {
+      "source": "/api/notifications",
+      "destination": "/api/notifications"
+    },
+    {
       "source": "/api/reminders/:path*",
       "destination": "/api/reminders?path=:path*"
+    },
+    {
+      "source": "/api/reminders",
+      "destination": "/api/reminders"
     },
     {
       "source": "/api/documents/:path*",
       "destination": "/api/documents?path=:path*"
     },
     {
+      "source": "/api/documents",
+      "destination": "/api/documents"
+    },
+    {
       "source": "/api/cron/:path*",
       "destination": "/api/cron?path=:path*"
+    },
+    {
+      "source": "/api/cron",
+      "destination": "/api/cron"
     },
     {
       "source": "/api/dev/:path*",

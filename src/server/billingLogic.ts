@@ -3,27 +3,110 @@ import Stripe from 'stripe';
 import { randomUUID } from 'crypto';
 import crypto from 'crypto';
 
-const supabaseUrl = process.env.VITE_SUPABASE_URL || process.env.SUPABASE_URL;
-const supabaseAnonKey = process.env.VITE_SUPABASE_ANON_KEY || process.env.SUPABASE_ANON_KEY;
-const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY || supabaseAnonKey;
+function getSupabaseConfig() {
+  const supabaseUrl = process.env.VITE_SUPABASE_URL || process.env.SUPABASE_URL;
+  const supabaseAnonKey = process.env.VITE_SUPABASE_ANON_KEY || process.env.SUPABASE_ANON_KEY;
+  const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_SERVICE_KEY || supabaseAnonKey;
+  return { supabaseUrl, supabaseAnonKey, serviceRoleKey };
+}
 
-function getSupabaseAdminClient() {
-  return createClient(supabaseUrl!, serviceRoleKey!, {
+export function getSupabaseAdminClient() {
+  const { supabaseUrl, serviceRoleKey } = getSupabaseConfig();
+  if (!supabaseUrl || !serviceRoleKey) {
+    throw new Error('Supabase configuration missing (URL or Service Role / Anon Key)');
+  }
+  return createClient(supabaseUrl, serviceRoleKey, {
     auth: { persistSession: false, autoRefreshToken: false }
   });
 }
 
-function getSupabaseUserClient(authHeaderOrToken: string) {
+export function getSupabaseUserClient(authHeaderOrToken: string) {
+  const { supabaseUrl, supabaseAnonKey, serviceRoleKey } = getSupabaseConfig();
+  if (!supabaseUrl || (!supabaseAnonKey && !serviceRoleKey)) {
+    throw new Error('Supabase configuration missing');
+  }
   let token = (authHeaderOrToken || '').trim();
   while (/^bearer\s+/i.test(token)) {
     token = token.replace(/^bearer\s+/i, '').trim();
   }
   token = token.replace(/^["']|["']$/g, '').trim();
 
-  return createClient(supabaseUrl!, serviceRoleKey!, {
-    global: { headers: { Authorization: `Bearer ${token}` } },
+  const keyToUse = supabaseAnonKey || serviceRoleKey!;
+  return createClient(supabaseUrl, keyToUse, {
+    global: { headers: token ? { Authorization: `Bearer ${token}` } : {} },
     auth: { persistSession: false, autoRefreshToken: false }
   });
+}
+
+export function extractBearerToken(req: any): string | null {
+  const authHeader = req.headers?.authorization || req.headers?.Authorization;
+  if (!authHeader || typeof authHeader !== 'string') {
+    return null;
+  }
+  let token = authHeader.trim();
+  while (/^bearer\s+/i.test(token)) {
+    token = token.replace(/^bearer\s+/i, '').trim();
+  }
+  token = token.replace(/^["']|["']$/g, '').trim();
+  return token || null;
+}
+
+export function extractWorkspaceId(req: any): string | undefined {
+  if (req.query?.workspaceId && typeof req.query.workspaceId === 'string' && req.query.workspaceId.trim()) {
+    return req.query.workspaceId.trim();
+  }
+  if (req.body?.workspaceId && typeof req.body.workspaceId === 'string' && req.body.workspaceId.trim()) {
+    return req.body.workspaceId.trim();
+  }
+  if (req.url && req.url.includes('workspaceId=')) {
+    try {
+      const parsed = new URL(req.url, 'http://localhost');
+      const ws = parsed.searchParams.get('workspaceId');
+      if (ws && ws.trim()) return ws.trim();
+    } catch {}
+  }
+  return undefined;
+}
+
+export async function verifyUserToken(token: string, reqId: string): Promise<{ user: any; error: string | null }> {
+  const { supabaseUrl, supabaseAnonKey, serviceRoleKey } = getSupabaseConfig();
+  if (!supabaseUrl || (!serviceRoleKey && !supabaseAnonKey)) {
+    console.warn(`[Billing [${reqId}]] Supabase configuration missing on server`);
+    return { user: null, error: 'SUPABASE_CONFIG_MISSING' };
+  }
+
+  // 1. Try with service role / admin client
+  if (serviceRoleKey) {
+    try {
+      const adminClient = createClient(supabaseUrl, serviceRoleKey, {
+        auth: { persistSession: false, autoRefreshToken: false }
+      });
+      const { data, error } = await adminClient.auth.getUser(token);
+      if (!error && data?.user) {
+        return { user: data.user, error: null };
+      }
+    } catch (e: any) {
+      console.warn(`[Billing [${reqId}]] Admin client getUser warning:`, e?.message);
+    }
+  }
+
+  // 2. Try with anon key client
+  if (supabaseAnonKey) {
+    try {
+      const anonClient = createClient(supabaseUrl, supabaseAnonKey, {
+        auth: { persistSession: false, autoRefreshToken: false }
+      });
+      const { data, error } = await anonClient.auth.getUser(token);
+      if (!error && data?.user) {
+        return { user: data.user, error: null };
+      }
+      return { user: null, error: error?.message || 'Invalid or expired token' };
+    } catch (e: any) {
+      console.warn(`[Billing [${reqId}]] Anon client getUser warning:`, e?.message);
+    }
+  }
+
+  return { user: null, error: 'Token validation failed' };
 }
 
 // -----------------------------------------------------------------------------
@@ -95,74 +178,124 @@ function verifyCashfreeWebhookSignature(
 // -----------------------------------------------------------------------------
 export async function handleGetSubscription(req: any, res: any) {
   const reqId = randomUUID();
+  const route = `${req.method || 'GET'} ${req.url || '/api/billing/subscription'}`;
+  console.log(`[Billing [${reqId}]] Request route: ${route}`);
+
   try {
     const authHeader = req.headers?.authorization || req.headers?.Authorization;
-    if (!authHeader || typeof authHeader !== 'string') {
-      return res.status(401).json({ error: 'Unauthorized: Bearer token required', reqId });
-    }
+    const hasAuthHeader = Boolean(authHeader && typeof authHeader === 'string' && authHeader.trim() !== '');
+    console.log(`[Billing [${reqId}]] Authorization header exists: ${hasAuthHeader}`);
 
-    let token = authHeader.trim();
-    while (/^bearer\s+/i.test(token)) {
-      token = token.replace(/^bearer\s+/i, '').trim();
-    }
-    token = token.replace(/^["']|["']$/g, '').trim();
+    const token = extractBearerToken(req);
+    const tokenParsingSucceeded = Boolean(token && token.length > 0);
+    console.log(`[Billing [${reqId}]] Token parsing succeeded: ${tokenParsingSucceeded} (Length: ${token ? token.length : 0})`);
 
     if (!token) {
       return res.status(401).json({ error: 'Unauthorized: Bearer token required', reqId });
     }
 
-    const workspaceId = req.query?.workspaceId || req.body?.workspaceId;
+    const workspaceId = extractWorkspaceId(req);
     if (!workspaceId) {
       return res.status(400).json({ error: 'Missing required parameter: workspaceId', reqId });
     }
 
-    const userClient = getSupabaseUserClient(token);
-    let { data: { user }, error: userError } = await userClient.auth.getUser(token);
+    const { user, error: authError } = await verifyUserToken(token, reqId);
+    console.log(`[Billing [${reqId}]] Supabase auth result status: ${user ? 'SUCCESS (User ' + user.id.substring(0, 8) + '...)' : 'FAILED (' + (authError || 'Unknown') + ')'}`);
 
-    if (userError || !user) {
-      const adminClient = getSupabaseAdminClient();
-      const fallbackResult = await adminClient.auth.getUser(token);
-      if (fallbackResult.data?.user && !fallbackResult.error) {
-        user = fallbackResult.data.user;
-        userError = null;
-      }
+    if (authError === 'SUPABASE_CONFIG_MISSING') {
+      console.log(`[Billing [${reqId}]] Supabase unconfigured, returning FREE fallback for workspace: ${workspaceId}`);
+      return res.status(200).json({
+        plan: 'FREE',
+        status: 'active',
+        isTrial: false,
+        reqId
+      });
     }
 
-    if (userError || !user) {
-      console.error(`[GetSubscription [${reqId}]] Token validation failed:`, userError?.message || userError);
+    if (authError || !user) {
       return res.status(401).json({ error: 'Unauthorized: Invalid token', reqId });
     }
 
-    const adminClient = getSupabaseAdminClient();
+    let adminClient;
+    try {
+      adminClient = getSupabaseAdminClient();
+    } catch {
+      return res.status(200).json({
+        plan: 'FREE',
+        status: 'active',
+        isTrial: false,
+        reqId
+      });
+    }
 
-    // Verify workspace membership
-    const { data: member, error: memberError } = await adminClient
-      .from('workspace_members')
-      .select('role')
-      .eq('workspace_id', workspaceId)
-      .eq('user_id', user.id)
-      .maybeSingle();
+    // Verify workspace membership & owner role
+    let userRole = 'MEMBER';
+    let isMemberOrOwner = false;
 
-    if (memberError || !member) {
+    try {
+      const { data: member, error: memberError } = await adminClient
+        .from('workspace_members')
+        .select('role')
+        .eq('workspace_id', workspaceId)
+        .eq('user_id', user.id)
+        .maybeSingle();
+
+      if (!memberError && member) {
+        userRole = member.role || 'MEMBER';
+        isMemberOrOwner = true;
+      } else {
+        const { data: wsOwner, error: wsOwnerError } = await adminClient
+          .from('workspaces')
+          .select('id, owner_id')
+          .eq('id', workspaceId)
+          .eq('owner_id', user.id)
+          .maybeSingle();
+
+        if (!wsOwnerError && wsOwner) {
+          userRole = 'ADMIN';
+          isMemberOrOwner = true;
+        }
+      }
+    } catch (wsErr: any) {
+      console.warn(`[Billing [${reqId}]] Workspace member check warning:`, wsErr?.message);
+    }
+
+    console.log(`[Billing [${reqId}]] Workspace resolution result: WorkspaceID=${workspaceId}, Role=${userRole}, IsMemberOrOwner=${isMemberOrOwner}`);
+
+    if (!isMemberOrOwner) {
       return res.status(403).json({ error: 'Forbidden: Workspace membership required', reqId });
     }
 
-    const { data: subData } = await adminClient
-      .from('subscriptions')
-      .select('*')
-      .eq('workspace_id', workspaceId)
-      .maybeSingle();
+    let subData: any = null;
+    try {
+      const { data, error: subError } = await adminClient
+        .from('subscriptions')
+        .select('*')
+        .eq('workspace_id', workspaceId)
+        .maybeSingle();
+      if (!subError && data) {
+        subData = data;
+      }
+    } catch (subQueryErr: any) {
+      console.warn(`[Billing [${reqId}]] Subscriptions query warning:`, subQueryErr?.message);
+    }
 
     if (!subData) {
-      const { data: wsData } = await adminClient
-        .from('workspaces')
-        .select('plan')
-        .eq('id', workspaceId)
-        .maybeSingle();
+      let workspacePlan = 'FREE';
+      try {
+        const { data: wsData } = await adminClient
+          .from('workspaces')
+          .select('plan')
+          .eq('id', workspaceId)
+          .maybeSingle();
+        if (wsData?.plan) {
+          workspacePlan = wsData.plan.toUpperCase();
+        }
+      } catch {}
 
-      const plan = wsData?.plan ? wsData.plan.toUpperCase() : 'FREE';
+      console.log(`[Billing [${reqId}]] Billing provider detected: NONE (Plan: ${workspacePlan}, Status: active)`);
       return res.status(200).json({
-        plan,
+        plan: workspacePlan,
         status: 'active',
         isTrial: false,
         reqId
@@ -172,18 +305,35 @@ export async function handleGetSubscription(req: any, res: any) {
     const now = new Date();
     const isTrial = subData.trial_end && new Date(subData.trial_end) > now;
     const isActive = subData.status === 'active' || subData.status === 'trialing';
+    const finalPlan = isActive ? (subData.plan || 'FREE').toUpperCase() : 'FREE';
+
+    let detectedProvider = 'UNKNOWN';
+    if (subData.cashfree_subscription_id) {
+      detectedProvider = 'CASHFREE';
+    } else if (subData.stripe_subscription_id) {
+      detectedProvider = 'STRIPE';
+    } else {
+      detectedProvider = 'INTERNAL_RECORD';
+    }
+
+    console.log(`[Billing [${reqId}]] Billing provider detected: ${detectedProvider} (Plan: ${finalPlan}, Status: ${subData.status || 'active'})`);
 
     return res.status(200).json({
-      plan: isActive ? (subData.plan || 'FREE') : 'FREE',
+      plan: finalPlan,
       status: subData.status || 'active',
-      isTrial: !!isTrial,
+      isTrial: Boolean(isTrial),
       cashfreeSubscriptionId: subData.cashfree_subscription_id || null,
       stripeSubscriptionId: subData.stripe_subscription_id || null,
       reqId
     });
   } catch (err: any) {
-    console.error(`[GetSubscription [${reqId}]] Error:`, err);
-    return res.status(500).json({ error: 'Billing service temporarily unavailable', reqId });
+    console.error(`[Billing [${reqId}]] Unhandled error in handleGetSubscription:`, err?.message || err);
+    return res.status(200).json({
+      plan: 'FREE',
+      status: 'active',
+      isTrial: false,
+      reqId
+    });
   }
 }
 
@@ -192,17 +342,17 @@ export async function handleGetSubscription(req: any, res: any) {
 // -----------------------------------------------------------------------------
 export async function handleCheckout(req: any, res: any) {
   const reqId = randomUUID();
+  const route = `${req.method || 'POST'} ${req.url || '/api/billing/checkout'}`;
+  console.log(`[Checkout [${reqId}]] Request route: ${route}`);
+
   try {
     const authHeader = req.headers?.authorization || req.headers?.Authorization;
-    if (!authHeader || typeof authHeader !== 'string') {
-      return res.status(401).json({ error: 'Unauthorized: Bearer token required', reqId });
-    }
+    const hasAuthHeader = Boolean(authHeader && typeof authHeader === 'string' && authHeader.trim() !== '');
+    console.log(`[Checkout [${reqId}]] Authorization header exists: ${hasAuthHeader}`);
 
-    let token = authHeader.trim();
-    while (/^bearer\s+/i.test(token)) {
-      token = token.replace(/^bearer\s+/i, '').trim();
-    }
-    token = token.replace(/^["']|["']$/g, '').trim();
+    const token = extractBearerToken(req);
+    const tokenParsingSucceeded = Boolean(token && token.length > 0);
+    console.log(`[Checkout [${reqId}]] Token parsing succeeded: ${tokenParsingSucceeded} (Length: ${token ? token.length : 0})`);
 
     if (!token) {
       return res.status(401).json({ error: 'Unauthorized: Bearer token required', reqId });
@@ -213,26 +363,17 @@ export async function handleCheckout(req: any, res: any) {
       return res.status(400).json({ error: 'Missing required parameters: workspaceId, planSlug', reqId });
     }
 
-    const userClient = getSupabaseUserClient(token);
-    let { data: { user }, error: userError } = await userClient.auth.getUser(token);
+    const { user, error: authError } = await verifyUserToken(token, reqId);
+    console.log(`[Checkout [${reqId}]] Supabase auth result status: ${user ? 'SUCCESS (User ' + user.id.substring(0, 8) + '...)' : 'FAILED (' + (authError || 'Unknown') + ')'}`);
 
-    if (userError || !user) {
-      const adminClient = getSupabaseAdminClient();
-      const fallbackResult = await adminClient.auth.getUser(token);
-      if (fallbackResult.data?.user && !fallbackResult.error) {
-        user = fallbackResult.data.user;
-        userError = null;
-      }
-    }
-
-    if (userError || !user) {
-      console.error(`[Checkout [${reqId}]] Token validation failed:`, userError?.message || userError);
+    if (authError || !user) {
       return res.status(401).json({ error: 'Unauthorized: Invalid token', reqId });
     }
 
     const adminClient = getSupabaseAdminClient();
 
     // Verify workspace membership and ADMIN role
+    let isAdmin = false;
     const { data: member, error: memberError } = await adminClient
       .from('workspace_members')
       .select('role')
@@ -240,7 +381,23 @@ export async function handleCheckout(req: any, res: any) {
       .eq('user_id', user.id)
       .maybeSingle();
 
-    if (memberError || !member || member.role !== 'ADMIN') {
+    if (!memberError && member?.role === 'ADMIN') {
+      isAdmin = true;
+    } else {
+      const { data: wsOwner } = await adminClient
+        .from('workspaces')
+        .select('id, owner_id')
+        .eq('id', workspaceId)
+        .eq('owner_id', user.id)
+        .maybeSingle();
+      if (wsOwner) {
+        isAdmin = true;
+      }
+    }
+
+    console.log(`[Checkout [${reqId}]] Workspace resolution result: WorkspaceID=${workspaceId}, IsAdmin=${isAdmin}`);
+
+    if (!isAdmin) {
       return res.status(403).json({ error: 'Forbidden: Workspace ADMIN role required', reqId });
     }
 
@@ -271,10 +428,10 @@ export async function handleCheckout(req: any, res: any) {
       return res.status(400).json({ error: `Invalid plan slug: ${planSlug}`, reqId });
     }
 
+    console.log(`[Checkout [${reqId}]] Billing provider detected: CASHFREE (Target Plan: ${slugUpper}, PlanId: ${planId})`);
+
     const origin = resolveAppOrigin(req);
     const subscriptionId = `sub_ws_${workspaceId}_${Date.now()}`;
-
-    // Clean phone input for Cashfree requirements
     const customerPhone = '9999999999';
 
     const cashfreePayload = {
@@ -293,7 +450,7 @@ export async function handleCheckout(req: any, res: any) {
     };
 
     const cashfreeUrl = `${getCashfreeBaseUrl()}/subscriptions`;
-    console.log(`[Checkout [${reqId}]] Calling Cashfree Sandbox API: ${cashfreeUrl}`);
+    console.log(`[Checkout [${reqId}]] Calling Cashfree API: ${cashfreeUrl}`);
 
     const cfResponse = await fetch(cashfreeUrl, {
       method: 'POST',
@@ -353,17 +510,17 @@ export async function handleCheckout(req: any, res: any) {
 // -----------------------------------------------------------------------------
 export async function handlePortal(req: any, res: any) {
   const reqId = randomUUID();
+  const route = `${req.method || 'POST'} ${req.url || '/api/billing/portal'}`;
+  console.log(`[Portal [${reqId}]] Request route: ${route}`);
+
   try {
     const authHeader = req.headers?.authorization || req.headers?.Authorization;
-    if (!authHeader || typeof authHeader !== 'string') {
-      return res.status(401).json({ error: 'Unauthorized: Bearer token required', reqId });
-    }
+    const hasAuthHeader = Boolean(authHeader && typeof authHeader === 'string' && authHeader.trim() !== '');
+    console.log(`[Portal [${reqId}]] Authorization header exists: ${hasAuthHeader}`);
 
-    let token = authHeader.trim();
-    while (/^bearer\s+/i.test(token)) {
-      token = token.replace(/^bearer\s+/i, '').trim();
-    }
-    token = token.replace(/^["']|["']$/g, '').trim();
+    const token = extractBearerToken(req);
+    const tokenParsingSucceeded = Boolean(token && token.length > 0);
+    console.log(`[Portal [${reqId}]] Token parsing succeeded: ${tokenParsingSucceeded} (Length: ${token ? token.length : 0})`);
 
     if (!token) {
       return res.status(401).json({ error: 'Unauthorized: Bearer token required', reqId });
@@ -374,25 +531,16 @@ export async function handlePortal(req: any, res: any) {
       return res.status(400).json({ error: 'Missing workspaceId', reqId });
     }
 
-    const userClient = getSupabaseUserClient(token);
-    let { data: { user }, error: userError } = await userClient.auth.getUser(token);
+    const { user, error: authError } = await verifyUserToken(token, reqId);
+    console.log(`[Portal [${reqId}]] Supabase auth result status: ${user ? 'SUCCESS (User ' + user.id.substring(0, 8) + '...)' : 'FAILED (' + (authError || 'Unknown') + ')'}`);
 
-    if (userError || !user) {
-      const adminClient = getSupabaseAdminClient();
-      const fallbackResult = await adminClient.auth.getUser(token);
-      if (fallbackResult.data?.user && !fallbackResult.error) {
-        user = fallbackResult.data.user;
-        userError = null;
-      }
-    }
-
-    if (userError || !user) {
-      console.error(`[Portal [${reqId}]] Token validation failed:`, userError?.message || userError);
+    if (authError || !user) {
       return res.status(401).json({ error: 'Unauthorized: Invalid token', reqId });
     }
 
     const adminClient = getSupabaseAdminClient();
 
+    let isAdmin = false;
     const { data: member } = await adminClient
       .from('workspace_members')
       .select('role')
@@ -400,7 +548,23 @@ export async function handlePortal(req: any, res: any) {
       .eq('user_id', user.id)
       .maybeSingle();
 
-    if (!member || member.role !== 'ADMIN') {
+    if (member?.role === 'ADMIN') {
+      isAdmin = true;
+    } else {
+      const { data: wsOwner } = await adminClient
+        .from('workspaces')
+        .select('id, owner_id')
+        .eq('id', workspaceId)
+        .eq('owner_id', user.id)
+        .maybeSingle();
+      if (wsOwner) {
+        isAdmin = true;
+      }
+    }
+
+    console.log(`[Portal [${reqId}]] Workspace resolution result: WorkspaceID=${workspaceId}, IsAdmin=${isAdmin}`);
+
+    if (!isAdmin) {
       return res.status(403).json({ error: 'Forbidden: Workspace ADMIN role required', reqId });
     }
 
@@ -415,6 +579,7 @@ export async function handlePortal(req: any, res: any) {
 
     // ROLLBACK SAFETY: If legacy Stripe subscription is active, direct to Stripe portal instead
     if (subscription?.stripe_subscription_id && !subscription?.cashfree_subscription_id) {
+      console.log(`[Portal [${reqId}]] Billing provider detected: STRIPE (Customer: ${subscription.stripe_customer_id})`);
       if (subscription.stripe_customer_id) {
         const stripe = getStripe();
         const origin = resolveAppOrigin(req);
@@ -427,6 +592,8 @@ export async function handlePortal(req: any, res: any) {
     }
 
     const cashfreeSubId = subscription?.cashfree_subscription_id;
+    console.log(`[Portal [${reqId}]] Billing provider detected: CASHFREE (SubId: ${cashfreeSubId || 'none'})`);
+
     if (!cashfreeSubId) {
       return res.status(400).json({ error: 'No active Cashfree subscription found to cancel', reqId });
     }

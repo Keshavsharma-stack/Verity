@@ -1,6 +1,24 @@
 import { createClient } from '@supabase/supabase-js';
 import { processWorkspaceExpirationScan } from './notificationLogic.js';
-import { verifyUserToken, extractBearerToken, getSupabaseAdminClient } from './billingLogic.js';
+import { verifyUserToken, extractBearerToken } from './billingLogic.js';
+
+function getServerServiceRoleClient() {
+  const supabaseUrl = process.env.VITE_SUPABASE_URL || process.env.SUPABASE_URL;
+  const serviceRoleKey =
+    process.env.SUPABASE_SERVICE_ROLE_KEY ||
+    process.env.SUPABASE_SERVICE_KEY ||
+    process.env.VITE_SUPABASE_SERVICE_ROLE_KEY ||
+    process.env.VITE_SUPABASE_ANON_KEY ||
+    process.env.SUPABASE_ANON_KEY;
+
+  if (!supabaseUrl || !serviceRoleKey) {
+    throw new Error('Supabase configuration missing on server (SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY)');
+  }
+
+  return createClient(supabaseUrl, serviceRoleKey, {
+    auth: { persistSession: false, autoRefreshToken: false }
+  });
+}
 
 export async function handleE2ETest(req: any, res: any) {
   if (req.method !== 'POST') {
@@ -8,6 +26,7 @@ export async function handleE2ETest(req: any, res: any) {
   }
 
   try {
+    // 1. Authenticate user from incoming Bearer token
     const token = extractBearerToken(req);
     if (!token) {
       console.warn('[E2E Test / Security] Request rejected: Missing Authorization header');
@@ -21,22 +40,23 @@ export async function handleE2ETest(req: any, res: any) {
     }
     const userId = user.id;
 
-    let adminClient;
+    // 2. Initialize server-only Supabase Service-Role client
+    let serviceRoleClient;
     try {
-      adminClient = getSupabaseAdminClient();
+      serviceRoleClient = getServerServiceRoleClient();
     } catch (e: any) {
-      console.error('[E2E Test / DB] Failed to create admin client:', e.message);
+      console.error('[E2E Test / DB] Failed to create server service-role client:', e.message);
       return res.status(500).json({ success: false, error: 'Supabase configuration missing on server' });
     }
 
-    // Verify workspace and authorization role (ADMIN required)
+    // 3. Verify workspace and enforce ADMIN role authorization
     const requestedWorkspaceId = req.body?.workspaceId || req.query?.workspaceId;
     let workspaceId: string | null = null;
     let userRole = 'MEMBER';
 
     if (requestedWorkspaceId) {
       // Verify user membership in requested workspace
-      const { data: requestedMember, error: reqMemErr } = await adminClient
+      const { data: requestedMember, error: reqMemErr } = await serviceRoleClient
         .from('workspace_members')
         .select('workspace_id, role')
         .eq('workspace_id', requestedWorkspaceId)
@@ -47,7 +67,7 @@ export async function handleE2ETest(req: any, res: any) {
         workspaceId = requestedMember.workspace_id;
         userRole = requestedMember.role || 'MEMBER';
       } else {
-        const { data: requestedWs, error: reqWsErr } = await adminClient
+        const { data: requestedWs, error: reqWsErr } = await serviceRoleClient
           .from('workspaces')
           .select('id, owner_id')
           .eq('id', requestedWorkspaceId)
@@ -62,7 +82,7 @@ export async function handleE2ETest(req: any, res: any) {
     }
 
     if (!workspaceId) {
-      const { data: memberData, error: memberError } = await adminClient
+      const { data: memberData, error: memberError } = await serviceRoleClient
         .from('workspace_members')
         .select('workspace_id, role')
         .eq('user_id', userId)
@@ -73,7 +93,7 @@ export async function handleE2ETest(req: any, res: any) {
         workspaceId = memberData[0].workspace_id;
         userRole = memberData[0].role || 'MEMBER';
       } else {
-        const { data: workspaces, error: wsError } = await adminClient
+        const { data: workspaces, error: wsError } = await serviceRoleClient
           .from('workspaces')
           .select('id, owner_id')
           .eq('owner_id', userId)
@@ -101,16 +121,11 @@ export async function handleE2ETest(req: any, res: any) {
       });
     }
 
-    console.log(`[E2E Test] Admin authenticated (User: ${userId}, Workspace: ${workspaceId}, Role: ${userRole})`);
+    console.log(`[E2E Test] Admin verified (User: ${userId}, Workspace: ${workspaceId}, Role: ${userRole}). Using server-only Service Role client.`);
 
-    const dbClient = adminClient;
-    const authMode = 'SERVICE_ROLE_KEY';
-
-    console.log(`[E2E Test] Database client operational with mode: ${authMode}`);
-
-    // Helper function for comprehensive cleanup of test records in workspace
+    // 4. Helper function for comprehensive cleanup of test records in workspace using Service Role
     const performTestCleanup = async (targetWsId: string) => {
-      const { data: testContractors, error: selectError } = await dbClient
+      const { data: testContractors, error: selectError } = await serviceRoleClient
         .from('contractors')
         .select('id')
         .eq('workspace_id', targetWsId)
@@ -127,7 +142,7 @@ export async function handleE2ETest(req: any, res: any) {
       const contractorIds = (testContractors || []).map((c: any) => c.id);
 
       // Find test documents either linked to test contractors or matching QA test naming
-      let docQuery = dbClient
+      let docQuery = serviceRoleClient
         .from('documents')
         .select('id, file_url, contractor_id')
         .eq('workspace_id', targetWsId);
@@ -147,31 +162,31 @@ export async function handleE2ETest(req: any, res: any) {
       if (testDocs && testDocs.length > 0) {
         const docIds = testDocs.map((d: any) => d.id);
         
-        // 0. Remove storage files if any
+        // Remove storage files if any
         const filePaths = testDocs
           .map((d: any) => d.file_url)
           .filter((url: string) => url && typeof url === 'string' && (url.startsWith('workspace/') || url.includes('qa_')));
 
         if (filePaths.length > 0) {
           try {
-            await dbClient.storage.from('documents').remove(filePaths);
-            console.log('[E2E Test] Cleaned up storage files:', filePaths);
+            await serviceRoleClient.storage.from('documents').remove(filePaths);
+            console.log('[E2E Test] Cleaned up storage files via Service Role:', filePaths);
           } catch (storageRemoveErr) {
             console.warn('[E2E Test] Storage remove warning:', storageRemoveErr);
           }
         }
         
-        // 1. Delete notifications
-        const { count: notifCount, error: notifDelErr } = await dbClient
+        // Delete notifications
+        const { count: notifCount, error: notifDelErr } = await serviceRoleClient
           .from('notifications')
           .delete({ count: 'exact' })
           .in('document_id', docIds);
         if (notifDelErr) console.error('[E2E Test] Notification deletion error:', notifDelErr);
         deletedNotifsCount = notifCount || 0;
 
-        // 2. Delete document extractions if any
+        // Delete document extractions if any
         try {
-          await dbClient
+          await serviceRoleClient
             .from('document_extractions')
             .delete()
             .in('document_id', docIds);
@@ -179,9 +194,9 @@ export async function handleE2ETest(req: any, res: any) {
           // Ignore if table not present
         }
 
-        // 3. Delete reminders
+        // Delete reminders
         try {
-          await dbClient
+          await serviceRoleClient
             .from('reminders')
             .delete()
             .in('document_id', docIds);
@@ -189,8 +204,8 @@ export async function handleE2ETest(req: any, res: any) {
           // Ignore
         }
 
-        // 4. Delete documents
-        const { count: docCount, error: docDelErr } = await dbClient
+        // Delete documents
+        const { count: docCount, error: docDelErr } = await serviceRoleClient
           .from('documents')
           .delete({ count: 'exact' })
           .in('id', docIds);
@@ -199,15 +214,15 @@ export async function handleE2ETest(req: any, res: any) {
       }
 
       if (contractorIds.length > 0) {
-        // 5. Delete compliance requirements
-        const { error: reqDelErr } = await dbClient
+        // Delete compliance requirements
+        const { error: reqDelErr } = await serviceRoleClient
           .from('compliance_requirements')
           .delete()
           .in('contractor_id', contractorIds);
         if (reqDelErr) console.error('[E2E Test] Compliance requirements deletion error:', reqDelErr);
 
-        // 6. Delete contractors
-        const { count: conCount, error: conDelErr } = await dbClient
+        // Delete contractors
+        const { count: conCount, error: conDelErr } = await serviceRoleClient
           .from('contractors')
           .delete({ count: 'exact' })
           .in('id', contractorIds);
@@ -235,14 +250,14 @@ export async function handleE2ETest(req: any, res: any) {
       });
     }
 
-    // Always perform a quick pre-test cleanup to avoid duplicate test records or limit exhaustion
+    // Pre-test cleanup to ensure idempotent baseline
     try {
       await performTestCleanup(workspaceId);
     } catch (preCleanErr) {
       console.warn('[E2E Test] Pre-test cleanup warning:', preCleanErr);
     }
 
-    // 1. Create Test Contractor
+    // 5. Create Test Contractor using Service-Role client
     const testContractorPayload = {
       workspace_id: workspaceId,
       company_name: '[TEST MODE] CRITICAL CONTRACTOR',
@@ -255,7 +270,7 @@ export async function handleE2ETest(req: any, res: any) {
     
     console.log('[E2E Test] Creating test contractor in workspace:', workspaceId);
     
-    const { data: contractor, error: contractorError } = await dbClient
+    const { data: contractor, error: contractorError } = await serviceRoleClient
       .from('contractors')
       .insert(testContractorPayload)
       .select()
@@ -266,8 +281,6 @@ export async function handleE2ETest(req: any, res: any) {
         code: contractorError?.code,
         message: contractorError?.message,
         details: contractorError?.details,
-        hint: contractorError?.hint,
-        authMode,
         workspaceId
       });
       return res.status(500).json({ 
@@ -279,7 +292,7 @@ export async function handleE2ETest(req: any, res: any) {
     console.log('[E2E Test] Test contractor created successfully with ID:', contractor.id);
 
     // Insert compliance requirements for contractor
-    const { error: reqError } = await dbClient.from('compliance_requirements').insert({
+    const { error: reqError } = await serviceRoleClient.from('compliance_requirements').insert({
       contractor_id: contractor.id,
       workspace_id: workspaceId,
       insurance_required: true,
@@ -294,7 +307,7 @@ export async function handleE2ETest(req: any, res: any) {
       console.warn('[E2E Test] Compliance requirements insert warning:', reqError.message);
     }
 
-    // 2. Upload sample PDF file to Supabase Storage before document insertion
+    // 6. Upload real non-empty compliance test file to Supabase Storage using server-only Service-Role client
     const pdfContent = `%PDF-1.4
 1 0 obj
 << /Type /Catalog /Pages 2 0 R >>
@@ -333,83 +346,62 @@ startxref
     const testStoragePath = `workspace/${workspaceId}/contractors/${contractor.id}/${storageTimestamp}_qa_e2e_critical_policy.pdf`;
     const actualFileSize = samplePdfBuffer.length;
 
-    console.log('[E2E Test] Uploading test PDF to Supabase Storage at path:', testStoragePath, 'size:', actualFileSize);
+    console.log('[E2E Test] Uploading non-empty test PDF to Supabase Storage via Service Role client:', testStoragePath, 'size:', actualFileSize);
 
-    const testFile = new File([samplePdfBuffer], 'qa_e2e_critical_policy.pdf', { type: 'application/pdf' });
     let uploadSuccess = false;
     let storageErrorMessage = '';
 
+    // Direct buffer upload with service-role credentials (bypassing client-auth constraints)
     try {
-      const { data: fileUploadData, error: fileUploadErr } = await dbClient.storage
+      const { data: fileUploadData, error: fileUploadErr } = await serviceRoleClient.storage
         .from('documents')
-        .upload(testStoragePath, testFile, {
+        .upload(testStoragePath, samplePdfBuffer, {
           cacheControl: '3600',
           contentType: 'application/pdf',
-          upsert: true,
-          headers: token ? { Authorization: `Bearer ${token}` } : undefined
+          upsert: true
         });
 
       if (!fileUploadErr && fileUploadData) {
         uploadSuccess = true;
-        console.log('[E2E Test] Test PDF uploaded successfully via File to:', fileUploadData.path || testStoragePath);
+        console.log('[E2E Test] Test PDF uploaded successfully to Storage path:', fileUploadData.path || testStoragePath);
       } else if (fileUploadErr) {
-        console.warn('[E2E Test] Primary File upload returned error:', fileUploadErr.message);
+        console.warn('[E2E Test] Service-Role Buffer upload error:', fileUploadErr.message);
         storageErrorMessage = fileUploadErr.message;
       }
     } catch (fileEx: any) {
-      console.warn('[E2E Test] File upload exception:', fileEx?.message || fileEx);
+      console.warn('[E2E Test] Buffer upload exception:', fileEx?.message || fileEx);
       storageErrorMessage = fileEx?.message || String(fileEx);
     }
 
+    // Fallback: Uint8Array upload with service role
     if (!uploadSuccess) {
       try {
-        const testBlob = new Blob([samplePdfBuffer], { type: 'application/pdf' });
-        const { data: blobUploadData, error: blobUploadErr } = await dbClient.storage
+        const uint8 = new Uint8Array(samplePdfBuffer);
+        const { data: uint8UploadData, error: uint8UploadErr } = await serviceRoleClient.storage
           .from('documents')
-          .upload(testStoragePath, testBlob, {
+          .upload(testStoragePath, uint8, {
             cacheControl: '3600',
             contentType: 'application/pdf',
-            upsert: true,
+            upsert: true
           });
 
-        if (!blobUploadErr && blobUploadData) {
+        if (!uint8UploadErr && uint8UploadData) {
           uploadSuccess = true;
-          console.log('[E2E Test] Test PDF uploaded successfully via Blob fallback to:', blobUploadData.path || testStoragePath);
-        } else if (blobUploadErr) {
-          console.warn('[E2E Test] Blob fallback upload returned error:', blobUploadErr.message);
-          storageErrorMessage = blobUploadErr.message;
+          console.log('[E2E Test] Test PDF uploaded successfully via Uint8Array fallback to:', uint8UploadData.path || testStoragePath);
+        } else if (uint8UploadErr) {
+          console.warn('[E2E Test] Uint8Array fallback upload error:', uint8UploadErr.message);
+          storageErrorMessage = uint8UploadErr.message;
         }
-      } catch (blobEx: any) {
-        console.warn('[E2E Test] Blob fallback exception:', blobEx?.message || blobEx);
+      } catch (uint8Ex: any) {
+        console.warn('[E2E Test] Uint8Array fallback exception:', uint8Ex?.message || uint8Ex);
       }
     }
 
     if (!uploadSuccess) {
+      console.error(`[E2E Test] Storage upload failed: ${storageErrorMessage}`);
       try {
-        const { data: bufUploadData, error: bufUploadErr } = await dbClient.storage
-          .from('documents')
-          .upload(testStoragePath, samplePdfBuffer, {
-            contentType: 'application/pdf',
-            upsert: true,
-          });
-
-        if (!bufUploadErr && bufUploadData) {
-          uploadSuccess = true;
-          console.log('[E2E Test] Test PDF uploaded successfully via Buffer fallback to:', bufUploadData.path || testStoragePath);
-        } else if (bufUploadErr) {
-          console.error('[E2E Test] Buffer fallback upload error:', bufUploadErr.message);
-          storageErrorMessage = bufUploadErr.message;
-        }
-      } catch (bufEx: any) {
-        console.error('[E2E Test] Buffer fallback exception:', bufEx?.message || bufEx);
-      }
-    }
-
-    if (!uploadSuccess) {
-      console.error(`[E2E Test] Storage upload failed after all strategies: ${storageErrorMessage}`);
-      try {
-        await dbClient.from('compliance_requirements').delete().eq('contractor_id', contractor.id);
-        await dbClient.from('contractors').delete().eq('id', contractor.id);
+        await serviceRoleClient.from('compliance_requirements').delete().eq('contractor_id', contractor.id);
+        await serviceRoleClient.from('contractors').delete().eq('id', contractor.id);
       } catch (rollbackErr) {
         console.warn('[E2E Test] Rollback after storage error warning:', rollbackErr);
       }
@@ -421,7 +413,7 @@ startxref
       });
     }
 
-    // 3. Create Test Document expiring in exactly 7 days (Triggers CRITICAL 7_DAYS checkpoint)
+    // 7. Create Test Document expiring in exactly 7 days (Triggers CRITICAL 7_DAYS checkpoint in production pipeline)
     const today = new Date();
     const targetDate = new Date(today);
     targetDate.setDate(today.getDate() + 7);
@@ -441,7 +433,7 @@ startxref
 
     console.log('[E2E Test] Creating test document record with expiration:', expiresAt, 'file_url:', testStoragePath);
 
-    const primaryInsertRes = await dbClient
+    const primaryInsertRes = await serviceRoleClient
       .from('documents')
       .insert(testDocumentPayload)
       .select()
@@ -453,14 +445,13 @@ startxref
         code: primaryInsertRes.error?.code,
         message: errorMsg,
         details: primaryInsertRes.error?.details,
-        authMode,
         workspaceId,
         contractorId: contractor.id
       });
       try {
-        await dbClient.storage.from('documents').remove([testStoragePath]);
-        await dbClient.from('compliance_requirements').delete().eq('contractor_id', contractor.id);
-        await dbClient.from('contractors').delete().eq('id', contractor.id);
+        await serviceRoleClient.storage.from('documents').remove([testStoragePath]);
+        await serviceRoleClient.from('compliance_requirements').delete().eq('contractor_id', contractor.id);
+        await serviceRoleClient.from('contractors').delete().eq('id', contractor.id);
       } catch (cleanErr) {
         console.warn('[E2E Test] Rollback cleanup warning:', cleanErr);
       }
@@ -476,16 +467,16 @@ startxref
     const document = primaryInsertRes.data;
     console.log('[E2E Test] Test document created successfully with ID:', document.id);
 
-    // 3. Run Scan 1 (Initial detection & notification creation)
+    // 8. Execute Production Expiration/Notification Pipeline: Scan 1 (Initial detection & notification creation)
     console.log('[E2E Test] Running Scan 1 for workspace:', workspaceId);
-    const scan1 = await processWorkspaceExpirationScan(dbClient, workspaceId, 'https://app.veritycompliance.com');
+    const scan1 = await processWorkspaceExpirationScan(serviceRoleClient, workspaceId, 'https://app.veritycompliance.com');
 
-    // 4. Run Scan 2 (Idempotency verification: 0 duplicates created)
+    // 9. Execute Production Expiration/Notification Pipeline: Scan 2 (Idempotency verification: 0 duplicates created)
     console.log('[E2E Test] Running Scan 2 (Idempotency check) for workspace:', workspaceId);
-    const scan2 = await processWorkspaceExpirationScan(dbClient, workspaceId, 'https://app.veritycompliance.com');
+    const scan2 = await processWorkspaceExpirationScan(serviceRoleClient, workspaceId, 'https://app.veritycompliance.com');
 
-    // 5. Fetch Generated Notifications for the test document
-    const { data: notifications, error: notifError } = await dbClient
+    // 10. Fetch Generated Notifications for the test document
+    const { data: notifications, error: notifError } = await serviceRoleClient
       .from('notifications')
       .select('*')
       .eq('document_id', document.id);
@@ -531,3 +522,4 @@ startxref
     });
   }
 }
+

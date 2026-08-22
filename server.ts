@@ -1,8 +1,8 @@
-import testE2eHandler from './api/cron/test-e2e';
 import express from 'express';
 import path from 'path';
 import { createServer as createViteServer } from 'vite';
 import dotenv from 'dotenv';
+import { handleE2ETest } from './src/server/devLogic';
 import {
   handleProcessExtraction,
   handleManualVerification,
@@ -135,7 +135,7 @@ app.all('/api/cron/process-expirations', async (req, res) => {
 });
 
 app.post('/api/cron/test-e2e', async (req, res) => {
-  return testE2eHandler(req, res);
+  return handleE2ETest(req, res);
 });
 
 // -----------------------------------------------------------------------------

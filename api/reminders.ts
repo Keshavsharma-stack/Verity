@@ -1,7 +1,7 @@
 import {
   handleSendNotification,
   handleProcessQueue,
-} from '../src/server/reminderLogic';
+} from '../src/server/reminderLogic.js';
 
 export default async function handler(req: any, res: any) {
   try {

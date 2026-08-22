@@ -1,5 +1,5 @@
-import { handleCronProcessExpirations } from '../src/server/notificationLogic';
-import { handleE2ETest } from '../src/server/devLogic';
+import { handleCronProcessExpirations } from '../src/server/notificationLogic.js';
+import { handleE2ETest } from '../src/server/devLogic.js';
 
 export default async function handler(req: any, res: any) {
   try {

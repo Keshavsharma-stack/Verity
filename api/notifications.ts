@@ -3,7 +3,7 @@ import {
   handleScanNotifications,
   handleUpdateNotificationRead,
   handleMarkAllNotificationsRead,
-} from '../src/server/notificationLogic';
+} from '../src/server/notificationLogic.js';
 
 export default async function handler(req: any, res: any) {
   try {

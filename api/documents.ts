@@ -1,7 +1,7 @@
 import {
   handleProcessExtraction,
   handleManualVerification,
-} from '../src/server/extractionLogic';
+} from '../src/server/extractionLogic.js';
 
 export default async function handler(req: any, res: any) {
   try {

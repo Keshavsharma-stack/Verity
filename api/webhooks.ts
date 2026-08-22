@@ -1,7 +1,7 @@
 import {
   handleCashfreeWebhook,
   handleStripeWebhook,
-} from '../src/server/billingLogic';
+} from '../src/server/billingLogic.js';
 
 export const config = {
   api: {
